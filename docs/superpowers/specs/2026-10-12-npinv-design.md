@@ -1,7 +1,7 @@
 # NPInv — Naspad Studio invoice dashboard (v1 design)
 
 Date: 2026-10-12
-Status: awaiting review
+Status: approved 2026-10-12, deployed
 
 ## 1. Purpose
 
@@ -244,3 +244,13 @@ Server changes this makes:
 - **Print layout** depends on the browser; multi-page invoices are the part most likely to need adjustment.
 - **Vector extraction** of the logo may fail, which makes the original brand files a dependency.
 - **Single disk:** the database and its backups share one NVMe drive with no off-box copy.
+
+## 14. Changes made during the build
+
+- **Logo:** Victor supplied the navy-wordmark logo as an image; it is `public/brand/logo-navy.png`. The guideline PDFs hold the icon only as an image, so `logo-white.svg` (sidebar) pairs that image with the guideline's vector wordmark, and `icon.png` is the supergraphic.
+- **Loading placeholders:** every page under `src/app/(app)/` has its own `loading.tsx`. Next 16 needs the placeholder beside the page for navigation between pages to be instant.
+- **Field ids** are generated per form with React `useId`, because Next keeps recently visited pages mounted but hidden and two forms could otherwise share ids.
+- **Invoice table cells** are centred, as drawn on the guideline's Billing Statement page.
+- **First push** was done from the session with the Gitea credential already in the macOS keychain.
+- **Reboot:** not tested by rebooting the server; the container's `unless-stopped` policy and the enabled Docker service were checked instead.
+- **Live check:** no invoice was marked sent on the live app during verification, so `INV-2026-001` is still free. A labelled draft was created, printed and deleted.

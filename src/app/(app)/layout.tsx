@@ -10,7 +10,8 @@ export default function AppLayout({ children }: LayoutProps<"/">) {
           <SidebarTrigger />
           <span className="font-semibold">Naspad Studio</span>
         </header>
-        <main className="mx-auto w-full max-w-6xl flex-1 p-4 md:p-8">{children}</main>
+        {/* SidebarInset is the page's <main>; this is only the centred content column. */}
+        <div className="mx-auto w-full max-w-6xl flex-1 p-4 md:p-8">{children}</div>
       </SidebarInset>
     </SidebarProvider>
   );
