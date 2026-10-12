@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import type { ChangeEvent, ReactNode } from "react";
 import { toast } from "sonner";
 import { Field, invalid } from "@/components/field";
@@ -38,7 +38,8 @@ export function ClientDialog({ client, children }: { client?: Client; children: 
     return result;
   });
   const { values, set, errors } = form;
-  const prefix = client ? `client-${client.id}` : "client-new";
+  // Unique per dialog instance; see the note in invoice-form.tsx.
+  const prefix = useId();
 
   const bind = (name: keyof ClientFormValues) => ({
     id: `${prefix}-${name}`,
