@@ -199,6 +199,9 @@ test("an invoice number is short and made of safe characters", () => {
   const good = parseInvoiceNumber(" INV-2026-001 ");
   assert.ok(good.ok);
   assert.equal(good.data, "INV-2026-001");
+  const lower = parseInvoiceNumber("inv-2026-005");
+  assert.ok(lower.ok);
+  assert.equal(lower.data, "INV-2026-005"); // upper case, so letter case cannot make a duplicate
   assert.equal(parseInvoiceNumber("").ok, false);
   assert.equal(parseInvoiceNumber("has space").ok, false);
   assert.equal(parseInvoiceNumber("x".repeat(31)).ok, false);

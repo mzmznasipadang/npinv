@@ -249,7 +249,8 @@ export function markSent(id: number, number: string): Result {
     if (!invoice) return { ok: false, error: "This invoice no longer exists." };
     if (invoice.status !== "draft") return { ok: false, error: "Only a draft can be marked sent." };
     const final = invoice.number ?? number;
-    if (one("SELECT 1 AS found FROM invoices WHERE number = ? AND id <> ?", final, id)) {
+    // Letter case is ignored, so "inv-2026-001" cannot sit beside "INV-2026-001".
+    if (one("SELECT 1 AS found FROM invoices WHERE number = ? COLLATE NOCASE AND id <> ?", final, id)) {
       return { ok: false, error: `Number ${final} is already used by another invoice.` };
     }
     run("UPDATE invoices SET status = 'sent', number = ?, updated_at = datetime('now') WHERE id = ?", final, id);
@@ -307,12 +308,17 @@ export function deleteInvoice(id: number): boolean {
   return run("DELETE FROM invoices WHERE id = ? AND status = 'draft' AND number IS NULL", id).changes > 0;
 }
 
+// Sums are capped at the largest integer a JavaScript number holds exactly; node:sqlite
+// refuses to return anything larger, which would take the dashboard down.
+const CEILING = Number.MAX_SAFE_INTEGER;
+
 export function dashboard(todayDate: string): { summaries: CurrencySummary[]; latest: InvoiceRow[] } {
   const summaries = many<CurrencySummary>(
     `SELECT currency,
-       COALESCE(SUM(CASE WHEN status = 'sent' THEN total END), 0) AS outstanding,
-       COALESCE(SUM(CASE WHEN status = 'sent' AND due_date < ? THEN total END), 0) AS overdue,
-       COALESCE(SUM(CASE WHEN status = 'paid' AND substr(paid_at, 1, 7) = ? THEN total END), 0) AS paidThisMonth
+       MIN(COALESCE(SUM(CASE WHEN status = 'sent' THEN total END), 0), ${CEILING}) AS outstanding,
+       MIN(COALESCE(SUM(CASE WHEN status = 'sent' AND due_date < ? THEN total END), 0), ${CEILING}) AS overdue,
+       MIN(COALESCE(SUM(CASE WHEN status = 'paid' AND substr(paid_at, 1, 7) = ? THEN total END), 0), ${CEILING})
+         AS paidThisMonth
      FROM invoices GROUP BY currency ORDER BY currency`,
     todayDate,
     todayDate.slice(0, 7),

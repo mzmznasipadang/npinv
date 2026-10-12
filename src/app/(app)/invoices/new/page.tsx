@@ -8,12 +8,16 @@ import { today } from "@/lib/rules";
 export default async function NewInvoicePage() {
   await connection();
   const settings = getSettings();
+  const initial = blankInvoiceValues(settings, today());
   return (
     <>
       <PageHeader title="New invoice" />
+      {/* Next keeps this page mounted while hidden, so a half-typed draft survives a visit elsewhere.
+          The key starts it again when the date or the defaults in Settings change. */}
       <InvoiceForm
+        key={JSON.stringify(initial)}
         invoiceId={null}
-        initial={blankInvoiceValues(settings, today())}
+        initial={initial}
         clients={listClients()}
         taxLabel={settings.taxLabel}
       />

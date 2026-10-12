@@ -207,7 +207,7 @@ export function InvoiceForm({ invoiceId, initial, clients, taxLabel, status }: I
               </div>
               {values.taxEnabled ? (
                 <Field id={fid("taxRate")} label={`${taxLabel} rate (%)`} error={errors.taxRate}>
-                  <Input type="number" min={0} max={100} step={0.01} {...bind("taxRate")} />
+                  <Input inputMode="decimal" autoComplete="off" {...bind("taxRate")} />
                 </Field>
               ) : null}
             </CardContent>
@@ -248,10 +248,10 @@ export function InvoiceForm({ invoiceId, initial, clients, taxLabel, status }: I
                     <Input autoComplete="off" {...cell("description", "Description")} />
                   </ItemCell>
                   <ItemCell id={id("qty")} error={errors[path("qty")]}>
-                    <Input type="number" min={1} step={1} {...cell("qty", "Qty")} />
+                    <Input inputMode="numeric" autoComplete="off" {...cell("qty", "Qty")} />
                   </ItemCell>
                   <ItemCell id={id("unitPrice")} error={errors[path("unitPrice")]}>
-                    <Input type="number" min={0} step={currency === "IDR" ? 1 : 0.01} {...cell("unitPrice", "Unit price")} />
+                    <Input inputMode="decimal" autoComplete="off" {...cell("unitPrice", "Unit price")} />
                   </ItemCell>
                   <ItemCell id={id("notes")} error={errors[path("notes")]}>
                     <Input autoComplete="off" {...cell("notes", "Notes")} />

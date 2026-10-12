@@ -79,13 +79,13 @@ export function SettingsForm({ initial }: { initial: SettingsFormValues }) {
               </Select>
             </Field>
             <Field id={fid("defaultDueDays")} label="Due after (days)" error={errors.defaultDueDays}>
-              <Input type="number" min={0} max={365} step={1} {...bind("defaultDueDays")} />
+              <Input inputMode="numeric" autoComplete="off" {...bind("defaultDueDays")} />
             </Field>
             <Field id={fid("taxLabel")} label="Tax label" error={errors.taxLabel}>
               <Input {...bind("taxLabel")} />
             </Field>
             <Field id={fid("defaultTaxRate")} label="Tax rate (%)" error={errors.defaultTaxRate}>
-              <Input type="number" min={0} max={100} step={0.01} {...bind("defaultTaxRate")} />
+              <Input inputMode="decimal" autoComplete="off" {...bind("defaultTaxRate")} />
             </Field>
             <Field id={fid("invoicePrefix")} label="Number prefix" error={errors.invoicePrefix}>
               <Input {...bind("invoicePrefix")} />

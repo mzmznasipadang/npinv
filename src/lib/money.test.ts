@@ -87,3 +87,14 @@ test("percentages convert to and from basis points", () => {
   assert.equal(percentToInput(1150), "11.5");
   assert.equal(percentToInput(0), "0");
 });
+
+test("a total above ten trillion smallest units is refused", () => {
+  assert.equal(invoiceTotals([{ qty: 1, unitPrice: 10_000_000_000_000 }], 0).total, 10_000_000_000_000);
+  assert.throws(() => invoiceTotals([{ qty: 1, unitPrice: 10_000_000_000_001 }], 0), RangeError);
+  assert.throws(() => invoiceTotals([{ qty: 1, unitPrice: 9_500_000_000_000 }], 1100), RangeError); // tax pushes it over
+});
+
+test("large dollar amounts keep their exact cents", () => {
+  assert.equal(formatMoney(8_999_999_999_999_991, "USD"), "$89,999,999,999,999.91");
+  assert.equal(formatMoney(10_000_000_000_000, "USD"), "$100,000,000,000.00");
+});

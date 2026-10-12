@@ -3,6 +3,12 @@ export const CURRENCIES: readonly Currency[] = ["IDR", "USD"];
 
 const DECIMALS: Record<Currency, number> = { IDR: 0, USD: 2 };
 
+/**
+ * The largest total one invoice may have, in the smallest unit (Rp 10 trillion, or $100 billion).
+ * Far above any real invoice, and low enough that sums of many invoices stay exact.
+ */
+export const MAX_TOTAL = 10_000_000_000_000;
+
 export type Line = { qty: number; unitPrice: number };
 export type Totals = { subtotal: number; taxAmount: number; total: number };
 
@@ -12,21 +18,22 @@ export function lineTotal(line: Line): number {
 
 /**
  * Totals in the smallest unit. Tax is rounded half up.
- * Throws RangeError when the total is too large to store exactly.
+ * Throws RangeError when the total is above MAX_TOTAL.
  */
 export function invoiceTotals(lines: readonly Line[], taxRateBp: number): Totals {
   let subtotal = 0n;
   for (const line of lines) subtotal += BigInt(line.qty) * BigInt(line.unitPrice);
   const taxAmount = (subtotal * BigInt(taxRateBp) + 5000n) / 10000n;
   const total = subtotal + taxAmount;
-  if (total > BigInt(Number.MAX_SAFE_INTEGER)) throw new RangeError("Amount is too large");
+  if (total > BigInt(MAX_TOTAL)) throw new RangeError("Amount is too large");
   return { subtotal: Number(subtotal), taxAmount: Number(taxAmount), total: Number(total) };
 }
 
 export function formatMoney(minor: number, currency: Currency): string {
   if (currency === "IDR") return `Rp ${new Intl.NumberFormat("id-ID").format(minor)}`;
-  const dollars = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return `$${dollars.format(minor / 100)}`;
+  // Whole dollars and cents are split as integers; dividing by 100 would round large amounts.
+  const cents = BigInt(minor);
+  return `$${new Intl.NumberFormat("en-US").format(cents / 100n)}.${String(cents % 100n).padStart(2, "0")}`;
 }
 
 /** Parses a plain decimal such as "1500000" or "19.99" into the smallest unit. Null when invalid. */

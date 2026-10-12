@@ -161,10 +161,12 @@ export function parseSettingsForm(values: unknown): Parsed<Settings> {
   return { ok: true, data: { ...rest, defaultTaxRateBp: defaultTaxRate } };
 }
 
+// Stored in upper case, so two numbers can never differ only by letter case.
 const numberSchema = z
   .string()
   .trim()
-  .regex(/^[A-Za-z0-9][A-Za-z0-9/._-]{0,29}$/, "Up to 30 letters, digits, dashes, dots or slashes");
+  .toUpperCase()
+  .regex(/^[A-Z0-9][A-Z0-9/._-]{0,29}$/, "Up to 30 letters, digits, dashes, dots or slashes");
 
 export function parseInvoiceNumber(value: unknown): Parsed<string> {
   const result = numberSchema.safeParse(value);

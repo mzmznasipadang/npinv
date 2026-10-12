@@ -270,3 +270,22 @@ test("clients are listed by name and can be edited", () => {
   assert.equal(repo.listClients()[1].company, "Kopi");
   assert.equal(repo.updateClient(424242, { name: "x", company: "", address: "", email: "", phone: "" }), false);
 });
+
+test("refuses a number that differs only by letter case", () => {
+  const a = repo.saveInvoice(null, input());
+  const b = repo.saveInvoice(null, input());
+  assert.deepEqual(repo.markSent(a, "INV-2026-005"), { ok: true });
+  assert.equal(repo.markSent(b, "inv-2026-005").ok, false);
+  const second = repo.getInvoice(b);
+  assert.ok(second);
+  assert.equal(second.number, null);
+});
+
+test("the dashboard does not fail when sent totals add up past what a number can hold", () => {
+  const big = input({ items: [{ description: "Huge", qty: 1, unitPrice: 10_000_000_000_000, notes: "" }] });
+  for (let i = 0; i < 901; i++) repo.saveInvoice(null, big);
+  getDb().exec("UPDATE invoices SET status = 'sent', number = 'BIG-' || id");
+  const { summaries } = repo.dashboard(TODAY);
+  assert.equal(summaries.length, 1);
+  assert.equal(summaries[0].outstanding, Number.MAX_SAFE_INTEGER);
+});
