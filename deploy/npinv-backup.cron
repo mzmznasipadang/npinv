@@ -1,0 +1,2 @@
+# Nightly NPInv database backup at 03:20, output goes to the journal (journalctl -t npinv-backup)
+20 3 * * * root /usr/local/sbin/npinv-backup 2>&1 | logger -t npinv-backup

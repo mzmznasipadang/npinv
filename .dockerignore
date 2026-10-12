@@ -1,0 +1,8 @@
+node_modules
+.next
+data
+docs
+deploy
+.git
+.claude
+README.md

@@ -1,0 +1,31 @@
+#!/bin/sh
+# Nightly snapshot of the NPInv database.
+# Installed as /usr/local/sbin/npinv-backup and run from /etc/cron.d/npinv-backup.
+set -eu
+
+DIR=/srv/npinv
+STAMP=$(date +%F)
+
+if [ "$(docker inspect -f '{{.State.Running}}' npinv 2>/dev/null)" = "true" ]; then
+  # The host has no sqlite3, so the running app takes the snapshot. VACUUM INTO
+  # writes a consistent copy even while the database is in use.
+  docker exec -e SNAPSHOT="/app/backups/npinv-$STAMP.db" npinv node -e '
+    const { rmSync } = require("node:fs");
+    const { DatabaseSync } = require("node:sqlite");
+    const target = process.env.SNAPSHOT;
+    rmSync(target, { force: true });
+    const db = new DatabaseSync(process.env.DATABASE_PATH);
+    db.exec("VACUUM INTO \x27" + target.replaceAll("\x27", "\x27\x27") + "\x27");
+    db.close();
+  '
+else
+  # Nothing is writing, so the database files can be copied as they are.
+  if [ ! -f "$DIR/data/npinv.db" ]; then
+    echo "no database at $DIR/data/npinv.db"
+    exit 1
+  fi
+  tar -czf "$DIR/backups/npinv-$STAMP.tar.gz" -C "$DIR/data" .
+fi
+
+find "$DIR/backups" -name 'npinv-*' -type f -mtime +14 -delete
+echo "snapshot written for $STAMP"

@@ -1,36 +1,45 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# NPInv
 
-## Getting Started
+Invoice dashboard for Naspad Studio: create invoices, save them as branded A4 PDFs, and track what is outstanding, overdue and paid.
 
-First, run the development server:
+- Design: `docs/superpowers/specs/2026-10-12-npinv-design.md`
+- Live (tailnet only): https://naspad-server.taild39e93.ts.net:8445
+
+## Develop
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The app opens at http://localhost:3000 and keeps its data in `data/npinv.db`, which is not committed.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm test
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run build && npm run lint
+```
 
-## Learn More
+## Deploy
 
-To learn more about Next.js, take a look at the following resources:
+Commit first; only committed code is deployed. With the Mac on the personal tailnet:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+./deploy/deploy.sh
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+This copies the last commit to `/srv/npinv/src` on naspad-server and runs `docker compose up -d --build` in `/srv/npinv`.
 
-## Deploy on Vercel
+## On the server
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+| What | Where |
+|---|---|
+| Compose project | `/srv/npinv` (`compose.yaml`, `src/`) |
+| Database | `/srv/npinv/data/npinv.db` |
+| Backups | `/srv/npinv/backups`, nightly at 03:20, kept 14 days |
+| Port | `127.0.0.1:3003`, published by `tailscale serve` on HTTPS 8445 |
+| Backup log | `journalctl -t npinv-backup` |
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+To restore a backup: stop the container, replace `data/npinv.db` with the snapshot, delete `data/npinv.db-wal` and `data/npinv.db-shm` if present, and start the container.
