@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { lineTotal, parseAmount, parsePercent } from "./money.ts";
+import { invoiceTotals, lineTotal, parseAmount, parsePercent } from "./money.ts";
 import type { Currency } from "./money.ts";
 import { isValidDate } from "./rules.ts";
-import type { ClientInput, InvoiceInput, Settings } from "./repo.ts";
+import type { ClientInput, InvoiceInput, PaymentInput, Settings } from "./repo.ts";
 
 export type FieldErrors = Record<string, string>;
 export type FormState = { ok?: boolean; errors?: FieldErrors; message?: string };
@@ -23,9 +23,14 @@ export type InvoiceFormValues = {
   discountEnabled: boolean;
   discountType: string;
   discount: string;
+  downPaymentEnabled: boolean;
+  downPaymentType: string;
+  downPayment: string;
   notes: string;
   items: ItemFormValues[];
 };
+
+export type PaymentFormValues = { paidOn: string; amount: string; note: string; writeOff: boolean };
 
 export type ClientFormValues = { name: string; company: string; address: string; email: string; phone: string };
 
@@ -77,9 +82,9 @@ function collect(error: z.ZodError): FieldErrors {
 
 export function parseInvoiceForm(values: unknown): Parsed<InvoiceInput> {
   // Some rules depend on another field: the price format on the currency, the tax
-  // rate and discount on their switches, the discount format on its type, and the
-  // due date on the issue date. The schema is built per submission so every field
-  // still reports its own error in one pass.
+  // rate, discount and down payment on their switches, the discount and down payment
+  // formats on their types, and the due date on the issue date. The schema is built
+  // per submission so every field still reports its own error in one pass.
   const raw = typeof values === "object" && values !== null ? (values as Record<string, unknown>) : {};
   const cur: Currency = raw.currency === "USD" ? "USD" : "IDR";
   const issueDate = typeof raw.issueDate === "string" && isValidDate(raw.issueDate) ? raw.issueDate : null;
@@ -106,6 +111,13 @@ export function parseInvoiceForm(values: unknown): Parsed<InvoiceInput> {
         : raw.discountType === "amount"
           ? amount(cur)
           : percent,
+    downPaymentType: z.enum(["percent", "amount"], "Choose a percentage or an amount"),
+    downPayment:
+      raw.downPaymentEnabled !== true
+        ? z.unknown().transform(() => 0)
+        : raw.downPaymentType === "amount"
+          ? amount(cur)
+          : percent,
     notes: text(2000),
     items: z
       .array(
@@ -126,13 +138,42 @@ export function parseInvoiceForm(values: unknown): Parsed<InvoiceInput> {
 
   const result = schema.safeParse(values);
   if (!result.success) return { ok: false, errors: collect(result.error) };
-  const { taxRate, discount, ...rest } = result.data;
+  const { taxRate, discount, downPayment, ...rest } = result.data;
+  const data: InvoiceInput = { ...rest, taxRateBp: taxRate, discountValue: discount, downPaymentValue: downPayment };
   // A float sum is close enough here: a subtotal past exact integers is far above any discount.
-  const subtotal = rest.items.reduce((sum, item) => sum + lineTotal(item), 0);
-  if (rest.discountType === "amount" && discount > subtotal) {
+  const subtotal = data.items.reduce((sum, item) => sum + lineTotal(item), 0);
+  if (data.discountType === "amount" && discount > subtotal) {
     return { ok: false, errors: { discount: "The discount cannot be more than the subtotal" } };
   }
-  return { ok: true, data: { ...rest, taxRateBp: taxRate, discountValue: discount } };
+  if (data.downPaymentType === "amount" && downPayment > 0) {
+    const total = totalOf(data);
+    if (total !== null && downPayment > total) {
+      return { ok: false, errors: { downPayment: "The down payment cannot be more than the total" } };
+    }
+  }
+  return { ok: true, data };
+}
+
+/** The invoice total, or null when it is too large to store (saving reports that). */
+function totalOf(input: InvoiceInput): number | null {
+  try {
+    return invoiceTotals(input.items, input.taxRateBp, { type: input.discountType, value: input.discountValue }).total;
+  } catch {
+    return null;
+  }
+}
+
+/** A payment in the invoice currency, stored in its smallest unit. */
+export function parsePaymentForm(values: unknown, cur: Currency): Parsed<PaymentInput> {
+  const result = z
+    .object({
+      paidOn: date,
+      amount: amount(cur).refine((minor) => minor > 0, "Enter an amount above zero"),
+      note: text(200),
+      writeOff: z.boolean(),
+    })
+    .safeParse(values);
+  return result.success ? { ok: true, data: result.data } : { ok: false, errors: collect(result.error) };
 }
 
 const clientSchema = z.object({

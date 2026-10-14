@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { blankInvoiceValues, invoiceToValues, settingsToValues } from "./invoice-form.ts";
-import { parseClientForm, parseInvoiceForm, parseInvoiceNumber, parseSettingsForm } from "./schemas.ts";
+import { blankInvoiceValues, blankPaymentValues, invoiceToValues, settingsToValues } from "./invoice-form.ts";
+import { parseClientForm, parseInvoiceForm, parseInvoiceNumber, parsePaymentForm, parseSettingsForm } from "./schemas.ts";
 import type { InvoiceFormValues } from "./schemas.ts";
 import type { Invoice, Settings } from "./repo.ts";
 
@@ -33,6 +33,9 @@ function values(overrides: Partial<InvoiceFormValues> = {}): InvoiceFormValues {
     discountEnabled: false,
     discountType: "percent",
     discount: "",
+    downPaymentEnabled: false,
+    downPaymentType: "percent",
+    downPayment: "",
     notes: "",
     items: [{ description: "Logo design", qty: "2", unitPrice: "1500000", notes: "" }],
     ...overrides,
@@ -59,6 +62,8 @@ test("a valid form becomes repository input in the smallest unit", () => {
     taxRateBp: 1150,
     discountType: "percent",
     discountValue: 0,
+    downPaymentType: "percent",
+    downPaymentValue: 0,
     notes: "",
     items: [{ description: "Logo design", qty: 2, unitPrice: 1_500_000, notes: "" }],
   });
@@ -155,6 +160,7 @@ test("blank values come from settings", () => {
   assert.equal(blank.taxEnabled, false);
   assert.equal(blank.taxRate, "11");
   assert.equal(blank.discountEnabled, false);
+  assert.equal(blank.downPaymentEnabled, false);
   assert.equal(blank.notes, "Thank you.");
   assert.equal(blank.items.length, 1);
 });
@@ -179,6 +185,11 @@ test("a stored invoice survives the trip through the form unchanged", () => {
     taxRateBp: 1100,
     discountType: "amount",
     discountValue: 300,
+    downPaymentType: "percent",
+    downPaymentValue: 5000,
+    payments: [],
+    paid: 0,
+    balance: 2995,
     notes: "Net 14",
     items: [{ description: "Hours", qty: 2, unitPrice: 1499, notes: "Oct" }],
   };
@@ -195,6 +206,8 @@ test("a stored invoice survives the trip through the form unchanged", () => {
     taxRateBp: 1100,
     discountType: "amount",
     discountValue: 300,
+    downPaymentType: "percent",
+    downPaymentValue: 5000,
     notes: "Net 14",
     items: [{ description: "Hours", qty: 2, unitPrice: 1499, notes: "Oct" }],
   });
@@ -239,4 +252,47 @@ test("an invoice number is short and made of safe characters", () => {
   assert.equal(parseInvoiceNumber("has space").ok, false);
   assert.equal(parseInvoiceNumber("x".repeat(31)).ok, false);
   assert.equal(parseInvoiceNumber(42).ok, false);
+});
+
+test("a down payment is stored only when switched on, and an amount may not exceed the total", () => {
+  const percent = parseInvoiceForm(values({ downPaymentEnabled: true, downPayment: "50" }));
+  assert.ok(percent.ok);
+  assert.equal(percent.data.downPaymentValue, 5000);
+  const off = parseInvoiceForm(values({ downPaymentEnabled: false, downPayment: "junk" }));
+  assert.ok(off.ok);
+  assert.equal(off.data.downPaymentValue, 0);
+  // values() totals 3,000,000 with no tax
+  assert.ok(parseInvoiceForm(values({ downPaymentEnabled: true, downPaymentType: "amount", downPayment: "3000000" })).ok);
+  assert.ok(errorsOf(values({ downPaymentEnabled: true, downPaymentType: "amount", downPayment: "3000001" })).downPayment);
+  assert.ok(errorsOf(values({ downPaymentEnabled: true, downPayment: "101" })).downPayment);
+  assert.ok(errorsOf(values({ downPaymentType: "bogus" })).downPaymentType);
+  // 11% tax makes the total 3,330,000
+  assert.ok(
+    parseInvoiceForm(values({ taxEnabled: true, downPaymentEnabled: true, downPaymentType: "amount", downPayment: "3330000" })).ok,
+  );
+});
+
+test("a payment needs a real date and an amount above zero in the invoice currency", () => {
+  const good = parsePaymentForm({ paidOn: "2026-10-12", amount: "19.99", note: " BCA ", writeOff: true }, "USD");
+  assert.ok(good.ok);
+  assert.deepEqual(good.data, { paidOn: "2026-10-12", amount: 1999, note: "BCA", writeOff: true });
+  const bad = parsePaymentForm({ paidOn: "2026-02-30", amount: "0", note: "", writeOff: false }, "IDR");
+  assert.equal(bad.ok, false);
+  if (!bad.ok) {
+    assert.ok(bad.errors.paidOn);
+    assert.ok(bad.errors.amount);
+  }
+  for (const amount of ["1.5", "1.500.000", "-5", "", "abc"]) {
+    assert.equal(parsePaymentForm({ paidOn: "2026-10-12", amount, note: "", writeOff: false }, "IDR").ok, false, amount);
+  }
+  assert.equal(parsePaymentForm(null, "IDR").ok, false);
+});
+
+test("the payment form starts with today and the full balance", () => {
+  assert.deepEqual(blankPaymentValues(150_050, "USD", "2026-10-12"), {
+    paidOn: "2026-10-12",
+    amount: "1500.50",
+    note: "",
+    writeOff: false,
+  });
 });

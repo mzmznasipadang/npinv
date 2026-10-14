@@ -3,9 +3,9 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import * as repo from "./repo";
-import { isValidDate, today } from "./rules";
-import { parseClientForm, parseInvoiceForm, parseInvoiceNumber, parseSettingsForm } from "./schemas";
-import type { ClientFormValues, FormState, InvoiceFormValues, SettingsFormValues } from "./schemas";
+import { today } from "./rules";
+import { parseClientForm, parseInvoiceForm, parseInvoiceNumber, parsePaymentForm, parseSettingsForm } from "./schemas";
+import type { ClientFormValues, FormState, InvoiceFormValues, PaymentFormValues, SettingsFormValues } from "./schemas";
 
 const GONE = "This invoice no longer exists.";
 
@@ -52,6 +52,7 @@ export async function saveInvoiceAction(id: number | null, values: InvoiceFormVa
   } catch (error) {
     if (error instanceof RangeError) return { message: "The invoice total is too large to store." };
     if (error instanceof repo.NotFoundError) return { message: GONE };
+    if (error instanceof repo.PaymentConflictError) return { errors: { [error.field]: error.message } };
     throw error;
   }
   refresh();
@@ -69,18 +70,29 @@ export async function markSentAction(id: number, number: string): Promise<FormSt
   return { ok: true };
 }
 
-export async function markPaidAction(id: number, paidAt: string): Promise<FormState> {
+export async function recordPaymentAction(id: number, values: PaymentFormValues): Promise<FormState> {
   if (!isId(id)) return { message: GONE };
-  if (typeof paidAt !== "string" || !isValidDate(paidAt)) return { errors: { paidAt: "Enter a valid date" } };
-  const result = repo.markPaid(id, paidAt);
+  const invoice = repo.getInvoice(id);
+  if (!invoice) return { message: GONE };
+  const parsed = parsePaymentForm(values, invoice.currency);
+  if (!parsed.ok) return { errors: parsed.errors };
+  const result = repo.recordPayment(id, invoice.currency, parsed.data);
   if (!result.ok) return { message: result.error };
   refresh();
   return { ok: true };
 }
 
-export async function undoStatusAction(id: number): Promise<FormState> {
+export async function removePaymentAction(invoiceId: number, paymentId: number): Promise<FormState> {
+  if (!isId(invoiceId) || !isId(paymentId) || !repo.removePayment(invoiceId, paymentId)) {
+    return { message: "This payment no longer exists." };
+  }
+  refresh();
+  return { ok: true };
+}
+
+export async function revertToDraftAction(id: number): Promise<FormState> {
   if (!isId(id)) return { message: GONE };
-  const result = repo.undoStatus(id);
+  const result = repo.revertToDraft(id);
   if (!result.ok) return { message: result.error };
   refresh();
   return { ok: true };

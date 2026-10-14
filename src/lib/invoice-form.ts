@@ -1,10 +1,17 @@
 import { amountToInput, percentToInput } from "./money.ts";
+import type { Currency, Portion } from "./money.ts";
 import { addDays } from "./rules.ts";
 import type { Invoice, Settings } from "./repo.ts";
-import type { InvoiceFormValues, ItemFormValues, SettingsFormValues } from "./schemas.ts";
+import type { InvoiceFormValues, ItemFormValues, PaymentFormValues, SettingsFormValues } from "./schemas.ts";
 
 export function blankItem(): ItemFormValues {
   return { description: "", qty: "1", unitPrice: "", notes: "" };
+}
+
+/** A percentage or amount as form text; empty when there is none. */
+function portionToInput(type: Portion["type"], value: number, currency: Currency): string {
+  if (value === 0) return "";
+  return type === "amount" ? amountToInput(value, currency) : percentToInput(value);
 }
 
 export function blankInvoiceValues(s: Settings, todayDate: string): InvoiceFormValues {
@@ -21,6 +28,9 @@ export function blankInvoiceValues(s: Settings, todayDate: string): InvoiceFormV
     discountEnabled: false,
     discountType: "percent",
     discount: "",
+    downPaymentEnabled: false,
+    downPaymentType: "percent",
+    downPayment: "",
     notes: s.defaultNotes,
     items: [blankItem()],
   };
@@ -39,12 +49,10 @@ export function invoiceToValues(inv: Invoice, s: Settings): InvoiceFormValues {
     taxRate: percentToInput(inv.taxRateBp > 0 ? inv.taxRateBp : s.defaultTaxRateBp),
     discountEnabled: inv.discountValue > 0,
     discountType: inv.discountType,
-    discount:
-      inv.discountValue === 0
-        ? ""
-        : inv.discountType === "amount"
-          ? amountToInput(inv.discountValue, inv.currency)
-          : percentToInput(inv.discountValue),
+    discount: portionToInput(inv.discountType, inv.discountValue, inv.currency),
+    downPaymentEnabled: inv.downPaymentValue > 0,
+    downPaymentType: inv.downPaymentType,
+    downPayment: portionToInput(inv.downPaymentType, inv.downPaymentValue, inv.currency),
     notes: inv.notes,
     items: inv.items.map((item) => ({
       description: item.description,
@@ -69,4 +77,9 @@ export function settingsToValues(s: Settings): SettingsFormValues {
     defaultDueDays: String(s.defaultDueDays),
     defaultNotes: s.defaultNotes,
   };
+}
+
+/** A payment of the whole balance, dated today. */
+export function blankPaymentValues(balance: number, currency: Currency, todayDate: string): PaymentFormValues {
+  return { paidOn: todayDate, amount: amountToInput(balance, currency), note: "", writeOff: false };
 }
