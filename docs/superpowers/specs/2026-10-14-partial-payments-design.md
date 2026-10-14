@@ -4,8 +4,9 @@ Date: 2026-10-14. Extends `2026-10-12-npinv-design.md`; where the two differ, th
 
 ## 1. Purpose
 
-Victor's clients often pay in parts:
+Victor's clients pay in one of these ways:
 
+- in full, in one payment;
 - a down payment (DP) before work starts, then the rest on delivery, all on one invoice;
 - several instalments of any amount on any date;
 - now and then a short payment (transfer fees, rounding) whose small gap is written off.
@@ -63,7 +64,7 @@ All money stays in integers of the smallest unit, and every sum keeps the existi
 **Invoice page — action bar.** On a sent invoice, **Mark paid** becomes **Record payment**. Its dialog:
 
 - Paid on — date, today by default.
-- Amount — the full balance by default, so paying in full is still one confirm.
+- Amount — the full balance by default, so a full payment is one confirm; typing a smaller amount makes it a part payment.
 - Note — optional.
 - "Write off the remaining Rp X" — a checkbox shown only while the amount is below the balance; X updates as the amount is typed.
 
