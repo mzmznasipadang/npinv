@@ -2043,9 +2043,15 @@ Never point the dev server at `data/npinv.db` itself. Copy it into the session s
 node -e 'const {DatabaseSync}=require("node:sqlite");new DatabaseSync("data/npinv.db",{readOnly:true}).exec(`VACUUM INTO '"'"'${process.argv[1]}'"'"'`)' "<scratchpad>/npinv.db"
 ```
 
+Before the dev server opens the copy (which upgrades it), record its version 2 figures:
+
+```bash
+node -e 'const {DatabaseSync}=require("node:sqlite");const d=new DatabaseSync(process.argv[1],{readOnly:true});console.log(d.prepare("SELECT currency, status, COUNT(*) AS n, SUM(total) AS total FROM invoices GROUP BY currency, status").all(), d.prepare("SELECT currency, SUM(total) AS paidThisMonth FROM invoices WHERE status = '"'"'paid'"'"' AND substr(paid_at, 1, 7) = strftime('"'"'%Y-%m'"'"', '"'"'now'"'"', '"'"'+7 hours'"'"') GROUP BY currency").all())' "<scratchpad>/npinv.db"
+```
+
 Start a dev server on port 3010. Set `DATABASE_PATH` to the copy and `ADMIN_PASSWORD` to a freshly generated test value. Use a temporary `.claude/launch.json` entry that you remove afterwards and never commit. Log in, then check each of these in the browser:
 
-1. An existing paid invoice shows one payment for its full total, dated on its old paid date. The dashboard figures match what the live server showed before the upgrade.
+1. An existing paid invoice shows one payment for its full total, dated on its old paid date. The dashboard's Outstanding (the `sent` totals), Overdue and Paid this month match the figures recorded above.
 2. On a sent invoice, set "Ask for a down payment" to 50% and save. The Totals card shows "Down payment due (50%)". The print page offers Full invoice and Down payment request, and opens on the DP request.
 3. Record a payment of half the balance with the note "DP 50%". The badge reads Part paid, the list shows "Balance …", and the dashboard's Outstanding falls by that amount.
 4. Record a second, short payment and tick "Write off the remaining …". The invoice turns Paid. The Payments card lists the payment and "Written off". The print page opens on With payments, which shows both rows and "Balance due Rp 0".
