@@ -17,7 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useServerForm } from "@/hooks/use-actions";
 import { saveInvoiceAction } from "@/lib/actions";
 import { blankItem } from "@/lib/invoice-form";
-import { formatMoney, invoiceTotals, parseAmount, parsePercent } from "@/lib/money";
+import { downPaymentAmount, formatMoney, invoiceTotals, parseAmount, parsePercent } from "@/lib/money";
 import type { Currency, Line, Portion, Totals } from "@/lib/money";
 import type { Client } from "@/lib/repo";
 import type { InvoiceFormValues, ItemFormValues } from "@/lib/schemas";
@@ -30,6 +30,8 @@ type InvoiceFormProps = {
   taxLabel: string;
   /** Present for a saved invoice; drives the status bar. */
   status?: Omit<InvoiceStatusProps, "dirty">;
+  /** Shown under the status bar; the invoice page passes the Payments card. */
+  payments?: ReactNode;
 };
 
 type TextField =
@@ -40,11 +42,20 @@ type TextField =
   | "dueDate"
   | "taxRate"
   | "discount"
+  | "downPayment"
   | "notes";
 
 const NO_CLIENT = "none";
 const QTY = /^[1-9]\d{0,5}$/;
 const ITEM_GRID = "md:grid-cols-[minmax(0,1fr)_5rem_9rem_minmax(0,10rem)_8rem_6.5rem]";
+
+/** What a switchable % or amount field holds: none when switched off, null while the text is invalid. */
+function typedPortion(enabled: boolean, type: string, text: string, currency: Currency): Portion | null {
+  const kind: Portion["type"] = type === "amount" ? "amount" : "percent";
+  if (!enabled) return { type: kind, value: 0 };
+  const value = kind === "amount" ? parseAmount(text, currency) : parsePercent(text);
+  return value === null ? null : { type: kind, value };
+}
 
 /** Totals for what is typed so far, or null while any amount is not yet valid. */
 function liveTotals(values: InvoiceFormValues, currency: Currency): Totals | null {
@@ -56,17 +67,23 @@ function liveTotals(values: InvoiceFormValues, currency: Currency): Totals | nul
   }
   const taxRateBp = values.taxEnabled ? parsePercent(values.taxRate) : 0;
   if (taxRateBp === null) return null;
-  const type: Portion["type"] = values.discountType === "amount" ? "amount" : "percent";
-  const discount = !values.discountEnabled
-    ? 0
-    : type === "amount"
-      ? parseAmount(values.discount, currency)
-      : parsePercent(values.discount);
+  const discount = typedPortion(values.discountEnabled, values.discountType, values.discount, currency);
   if (discount === null) return null;
   try {
-    return invoiceTotals(lines, taxRateBp, { type, value: discount });
+    return invoiceTotals(lines, taxRateBp, discount);
   } catch {
     return null;
+  }
+}
+
+/** The down payment for what is typed so far, or undefined while it cannot be worked out. */
+function liveDownPayment(values: InvoiceFormValues, currency: Currency, totals: Totals | null): number | undefined {
+  const downPayment = typedPortion(values.downPaymentEnabled, values.downPaymentType, values.downPayment, currency);
+  if (!values.downPaymentEnabled || downPayment === null || totals === null) return undefined;
+  try {
+    return downPaymentAmount(totals.total, downPayment);
+  } catch {
+    return undefined;
   }
 }
 
@@ -83,7 +100,7 @@ function ItemCell({ id, error, children }: { id: string; error?: string; childre
   );
 }
 
-export function InvoiceForm({ invoiceId, initial, clients, taxLabel, status }: InvoiceFormProps) {
+export function InvoiceForm({ invoiceId, initial, clients, taxLabel, status, payments }: InvoiceFormProps) {
   const [saved, setSaved] = useState(initial);
   // Next keeps recently visited routes mounted but hidden, so two copies of a form can be
   // in the document at once. Field ids are made unique per form instance.
@@ -100,6 +117,7 @@ export function InvoiceForm({ invoiceId, initial, clients, taxLabel, status }: I
   const { values, set, setValues, errors } = form;
   const currency: Currency = values.currency === "USD" ? "USD" : "IDR";
   const totals = liveTotals(values, currency);
+  const downPayment = liveDownPayment(values, currency, totals);
   const dirty = JSON.stringify(values) !== JSON.stringify(saved);
   const money = (minor: number | undefined) => (minor === undefined ? "—" : formatMoney(minor, currency));
 
@@ -153,6 +171,7 @@ export function InvoiceForm({ invoiceId, initial, clients, taxLabel, status }: I
   return (
     <div className="grid gap-6">
       {status ? <InvoiceStatusActions {...status} dirty={dirty} /> : null}
+      {payments}
 
       <form onSubmit={form.onSubmit} className="grid gap-6" noValidate>
         <div className="grid gap-6 lg:grid-cols-2">
@@ -254,6 +273,36 @@ export function InvoiceForm({ invoiceId, initial, clients, taxLabel, status }: I
                 <Field id={fid("taxRate")} label={`${taxLabel} rate (%)`} error={errors.taxRate}>
                   <Input inputMode="decimal" autoComplete="off" {...bind("taxRate")} />
                 </Field>
+              ) : null}
+              <div className="flex items-center gap-3">
+                <Switch
+                  id={fid("downPaymentEnabled")}
+                  checked={values.downPaymentEnabled}
+                  onCheckedChange={(checked) => set("downPaymentEnabled", checked)}
+                />
+                <Label htmlFor={fid("downPaymentEnabled")}>Ask for a down payment</Label>
+              </div>
+              {values.downPaymentEnabled ? (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field id={fid("downPaymentType")} label="Down payment as" error={errors.downPaymentType}>
+                    <Select value={values.downPaymentType} onValueChange={(value) => set("downPaymentType", value)}>
+                      <SelectTrigger id={fid("downPaymentType")} className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="percent">Percentage of the total</SelectItem>
+                        <SelectItem value="amount">Amount in {currency}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field
+                    id={fid("downPayment")}
+                    label={values.downPaymentType === "amount" ? `Down payment (${currency})` : "Down payment (%)"}
+                    error={errors.downPayment}
+                  >
+                    <Input inputMode="decimal" autoComplete="off" {...bind("downPayment")} />
+                  </Field>
+                </div>
               ) : null}
             </CardContent>
           </Card>
@@ -391,6 +440,14 @@ export function InvoiceForm({ invoiceId, initial, clients, taxLabel, status }: I
                 ) : null}
                 <dt className="font-semibold">Total</dt>
                 <dd className="text-right text-lg font-semibold">{money(totals?.total)}</dd>
+                {values.downPaymentEnabled ? (
+                  <>
+                    <dt className="text-muted-foreground">
+                      Down payment due{values.downPaymentType === "amount" ? "" : ` (${values.downPayment}%)`}
+                    </dt>
+                    <dd className="text-right">{money(downPayment)}</dd>
+                  </>
+                ) : null}
               </dl>
             </CardContent>
           </Card>
