@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { InvoiceForm } from "@/components/invoice-form";
 import { PageHeader } from "@/components/page-header";
+import { PaymentsCard } from "@/components/payments-card";
 import { StatusBadge } from "@/components/status-badge";
 import { invoiceToValues } from "@/lib/invoice-form";
 import { getInvoice, getSettings, listClients, suggestNumber } from "@/lib/repo";
@@ -18,7 +19,7 @@ export default async function InvoicePage({ params }: PageProps<"/invoices/[id]"
   return (
     <>
       <PageHeader title={invoice.number ?? "Draft invoice"}>
-        <StatusBadge status={displayStatus(invoice.status, invoice.dueDate, todayDate)} />
+        <StatusBadge status={displayStatus(invoice.status, invoice.dueDate, todayDate, invoice.paid)} />
       </PageHeader>
       <InvoiceForm
         key={invoice.id}
@@ -32,7 +33,21 @@ export default async function InvoicePage({ params }: PageProps<"/invoices/[id]"
           number: invoice.number,
           suggestedNumber: invoice.number ?? suggestNumber(invoice.id) ?? "",
           today: todayDate,
+          balance: invoice.balance,
+          currency: invoice.currency,
+          hasPayments: invoice.payments.length > 0,
         }}
+        payments={
+          invoice.status === "draft" ? undefined : (
+            <PaymentsCard
+              invoiceId={invoice.id}
+              payments={invoice.payments}
+              paid={invoice.paid}
+              balance={invoice.balance}
+              currency={invoice.currency}
+            />
+          )
+        }
       />
     </>
   );

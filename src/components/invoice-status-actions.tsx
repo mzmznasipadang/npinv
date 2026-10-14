@@ -17,15 +17,21 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { useAction } from "@/hooks/use-actions";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { useAction, useServerForm } from "@/hooks/use-actions";
 import {
   deleteInvoiceAction,
   duplicateInvoiceAction,
-  markPaidAction,
   markSentAction,
-  undoStatusAction,
+  recordPaymentAction,
+  revertToDraftAction,
 } from "@/lib/actions";
+import { blankPaymentValues } from "@/lib/invoice-form";
+import { formatMoney, parseAmount } from "@/lib/money";
+import type { Currency } from "@/lib/money";
 import type { Status } from "@/lib/rules";
+import type { PaymentFormValues } from "@/lib/schemas";
 
 export type InvoiceStatusProps = {
   id: number;
@@ -33,11 +39,26 @@ export type InvoiceStatusProps = {
   number: string | null;
   suggestedNumber: string;
   today: string;
+  /** What is still owed, in the smallest unit. */
+  balance: number;
+  currency: Currency;
+  /** True when any payment or write-off is recorded; an invoice with some cannot go back to draft. */
+  hasPayments: boolean;
   /** True while the form holds unsaved changes; the actions act on what is saved, so they wait. */
   dirty: boolean;
 };
 
-export function InvoiceStatusActions({ id, status, number, suggestedNumber, today, dirty }: InvoiceStatusProps) {
+export function InvoiceStatusActions({
+  id,
+  status,
+  number,
+  suggestedNumber,
+  today,
+  balance,
+  currency,
+  hasPayments,
+  dirty,
+}: InvoiceStatusProps) {
   const { pending, run } = useAction();
   const blocked = dirty || pending;
 
@@ -46,27 +67,18 @@ export function InvoiceStatusActions({ id, status, number, suggestedNumber, toda
       {status === "draft" ? (
         <MarkSentDialog id={id} number={number} suggestedNumber={suggestedNumber} disabled={blocked} />
       ) : null}
-      {status === "sent" ? <MarkPaidDialog id={id} today={today} disabled={blocked} /> : null}
       {status === "sent" ? (
+        <RecordPaymentDialog id={id} balance={balance} currency={currency} today={today} disabled={blocked} />
+      ) : null}
+      {status === "sent" && !hasPayments ? (
         <Button
           type="button"
           variant="outline"
           size="sm"
           disabled={blocked}
-          onClick={() => run(() => undoStatusAction(id), () => toast.success("Reverted to draft"))}
+          onClick={() => run(() => revertToDraftAction(id), () => toast.success("Reverted to draft"))}
         >
           <Undo2 /> Revert to draft
-        </Button>
-      ) : null}
-      {status === "paid" ? (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={blocked}
-          onClick={() => run(() => undoStatusAction(id), () => toast.success("Marked unpaid"))}
-        >
-          <Undo2 /> Mark unpaid
         </Button>
       ) : null}
       <Button
@@ -179,60 +191,92 @@ function MarkSentDialog({ id, number, suggestedNumber, disabled }: MarkSentProps
   );
 }
 
-function MarkPaidDialog({ id, today, disabled }: { id: number; today: string; disabled: boolean }) {
-  const [open, setOpen] = useState(false);
-  const [value, setValue] = useState(today);
-  const [error, setError] = useState<string>();
-  const [pending, startTransition] = useTransition();
+type RecordPaymentProps = { id: number; balance: number; currency: Currency; today: string; disabled: boolean };
 
-  function confirm(event: FormEvent) {
-    event.preventDefault();
-    startTransition(async () => {
-      const result = await markPaidAction(id, value);
-      if (!result) return;
-      if (result.ok) {
-        setOpen(false);
-        toast.success("Marked paid");
-      } else {
-        setError(result.errors?.paidAt ?? result.message ?? "Something went wrong.");
-      }
-    });
+function RecordPaymentDialog({ id, balance, currency, today, disabled }: RecordPaymentProps) {
+  const [open, setOpen] = useState(false);
+  const initial = blankPaymentValues(balance, currency, today);
+
+  /** What the typed amount leaves owing, or 0 while it is not a valid amount below the balance. */
+  function leftOver(values: PaymentFormValues): number {
+    const amount = parseAmount(values.amount, currency);
+    return amount !== null && amount > 0 && amount < balance ? balance - amount : 0;
   }
+
+  const form = useServerForm(initial, async (values) => {
+    const result = await recordPaymentAction(id, { ...values, writeOff: values.writeOff && leftOver(values) > 0 });
+    if (result?.ok) {
+      setOpen(false);
+      toast.success("Payment recorded");
+    }
+    return result;
+  });
+  const { values, set, errors } = form;
+  const rest = leftOver(values);
 
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (next) {
-          setValue(today);
-          setError(undefined);
-        }
+        if (next) form.reset(initial);
       }}
     >
       <DialogTrigger asChild>
         <Button type="button" size="sm" disabled={disabled}>
-          <Wallet /> Mark paid
+          <Wallet /> Record payment
         </Button>
       </DialogTrigger>
       <DialogContent>
-        <form onSubmit={confirm} className="grid gap-4" noValidate>
+        <form onSubmit={form.onSubmit} className="grid gap-4" noValidate>
           <DialogHeader>
-            <DialogTitle>Mark as paid</DialogTitle>
-            <DialogDescription>The date the payment arrived. It decides which month the total counts in.</DialogDescription>
+            <DialogTitle>Record a payment</DialogTitle>
+            <DialogDescription>
+              {formatMoney(balance, currency)} is still owed. The payment date decides which month it counts in.
+            </DialogDescription>
           </DialogHeader>
-          <Field id="paid-at" label="Paid on" error={error}>
+          <Field id="payment-paid-on" label="Paid on" error={errors.paidOn}>
             <Input
-              id="paid-at"
+              id="payment-paid-on"
               type="date"
-              value={value}
-              onChange={(event) => setValue(event.target.value)}
-              {...invalid("paid-at", error)}
+              value={values.paidOn}
+              onChange={(event) => set("paidOn", event.target.value)}
+              {...invalid("payment-paid-on", errors.paidOn)}
             />
           </Field>
+          <Field id="payment-amount" label={`Amount (${currency})`} error={errors.amount}>
+            <Input
+              id="payment-amount"
+              inputMode="decimal"
+              autoComplete="off"
+              value={values.amount}
+              onChange={(event) => set("amount", event.target.value)}
+              {...invalid("payment-amount", errors.amount)}
+            />
+          </Field>
+          <Field id="payment-note" label="Note (optional)" error={errors.note}>
+            <Input
+              id="payment-note"
+              autoComplete="off"
+              placeholder="e.g. DP 50%, BCA transfer"
+              value={values.note}
+              onChange={(event) => set("note", event.target.value)}
+              {...invalid("payment-note", errors.note)}
+            />
+          </Field>
+          {rest > 0 ? (
+            <div className="flex items-center gap-3">
+              <Switch
+                id="payment-write-off"
+                checked={values.writeOff}
+                onCheckedChange={(checked) => set("writeOff", checked)}
+              />
+              <Label htmlFor="payment-write-off">Write off the remaining {formatMoney(rest, currency)}</Label>
+            </div>
+          ) : null}
           <DialogFooter>
-            <Button type="submit" disabled={pending}>
-              {pending ? "Saving…" : "Mark paid"}
+            <Button type="submit" disabled={form.pending}>
+              {form.pending ? "Saving…" : "Record payment"}
             </Button>
           </DialogFooter>
         </form>
