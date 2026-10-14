@@ -87,7 +87,7 @@ Schema is applied at startup and versioned with `PRAGMA user_version` so later c
 - **Totals:** line = qty × unit price; subtotal = sum of lines; discount = subtotal × percentage (rounded half up) or a fixed amount no larger than the subtotal; tax = (subtotal − discount) × rate, rounded half up to the smallest unit, since PPN is charged on the discounted price; total = subtotal − discount + tax.
 - **Quantity** is a whole number of at least 1.
 - **Numbering:** `INV-2026-001` — prefix, year of the issue date, sequence padded to three digits. The number is assigned the first time an invoice is marked sent. It is prefilled with the next in sequence for that year and can be edited at that moment (to continue an existing series), must be unique, and never changes afterwards.
-- **Status changes:** draft → sent → paid. Undo is allowed one step back (paid → sent, sent → draft); a number, once assigned, is kept.
+- **Status changes:** draft → sent → paid. Paid follows the recorded payments; see 2026-10-14-partial-payments-design.md. A sent invoice with no payments can go back to draft; a number, once assigned, is kept.
 - **Overdue** is not stored. An invoice is overdue when it is `sent` and its due date is before today.
 - **Editing** is allowed in any status.
 - **Deleting** is allowed in any status, with a confirmation. A numbered invoice also needs its number typed out. Deleting the latest numbered invoice lets the next one reuse its number; deleting an older one leaves a gap in the sequence. Victor chose this over a void status.
@@ -118,7 +118,7 @@ The app shell is a sidebar (logo, navigation, theme toggle) plus content area. I
 - PPN switch with rate, prefilled from settings.
 - Notes, prefilled from settings.
 - Live subtotal, tax and total.
-- Actions: Save, Mark sent, Mark paid (with paid date, default today), undo status, Duplicate, Delete, Download PDF.
+- Actions: Save, Mark sent, Record payment, Revert to draft (sent invoices with no payments), Duplicate, Delete, Download PDF.
 
 **Clients (`/clients`)** — list, add, edit, delete.
 
@@ -257,3 +257,4 @@ Server changes this makes:
 - **Live check:** no invoice was marked sent on the live app during verification, so `INV-2026-001` is still free. A labelled draft was created, printed and deleted.
 - **After the final review:** one invoice's total is capped at 10 trillion in the smallest unit (Rp 10 trillion or $100 billion), and dashboard sums are capped at the largest exact integer, so absurd amounts give an error instead of breaking the dashboard. Invoice numbers are stored in upper case and compared without regard to letter case. Quantity, price and rate fields are text inputs with a numeric keypad hint, because a number input changes its value when the wheel scrolls over it. The new-invoice form keeps a half-typed draft but starts again when the date or the defaults change.
 - **Discount and delete (2026-10-14):** one discount per invoice, as a percentage or a fixed amount, taken off before tax. Existing databases gain the three discount columns through schema version 2, so their totals do not change. Any invoice can now be deleted; numbered ones need the number typed to confirm.
+- **Partial payments (2026-10-14):** payments, write-offs, down payment requests and three print versions, as designed in 2026-10-14-partial-payments-design.md. Mark paid and Mark unpaid are replaced by Record payment and removing a payment.
