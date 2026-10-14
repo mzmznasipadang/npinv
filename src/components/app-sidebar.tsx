@@ -3,8 +3,9 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FileText, LayoutDashboard, Settings, Users } from "lucide-react";
+import { FileText, LayoutDashboard, LogOut, Settings, Users } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { logoutAction } from "@/lib/auth-actions";
 import {
   Sidebar,
   SidebarContent,
@@ -79,6 +80,14 @@ export function AppSidebar() {
         <SidebarMenu>
           <SidebarMenuItem>
             <ThemeToggle />
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <form action={logoutAction}>
+              <SidebarMenuButton type="submit">
+                <LogOut />
+                <span>Sign out</span>
+              </SidebarMenuButton>
+            </form>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

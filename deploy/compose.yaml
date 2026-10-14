@@ -7,6 +7,8 @@ services:
     image: npinv:latest
     container_name: npinv
     restart: unless-stopped
+    # /srv/npinv/.env holds ADMIN_PASSWORD=...; it never goes in the repo.
+    env_file: .env
     user: "1000:1000"
     ports:
       # Docker-published ports bypass ufw, so bind to localhost only.
