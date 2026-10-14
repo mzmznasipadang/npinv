@@ -1,5 +1,5 @@
 import { getDb, transaction } from "./db.ts";
-import { invoiceTotals } from "./money.ts";
+import { formatMoney, invoiceTotals } from "./money.ts";
 import type { Currency, Portion } from "./money.ts";
 import { addDays, displayStatus, formatNumber, nextSequence } from "./rules.ts";
 import type { DisplayStatus, Status } from "./rules.ts";
@@ -35,9 +35,17 @@ export type InvoiceInput = {
   discountType: Portion["type"];
   /** Basis points for a percentage, the smallest unit for an amount. Zero means no discount. */
   discountValue: number;
+  downPaymentType: Portion["type"];
+  /** Basis points for a percentage, the smallest unit for an amount. Zero means no down payment is asked for. */
+  downPaymentValue: number;
   notes: string;
   items: ItemInput[];
 };
+
+export type PaymentKind = "payment" | "write_off";
+export type Payment = { id: number; paidOn: string; amount: number; kind: PaymentKind; note: string };
+/** One payment. With `writeOff`, whatever it leaves owing is written off on the same date. */
+export type PaymentInput = { paidOn: string; amount: number; note: string; writeOff: boolean };
 
 export type Invoice = InvoiceInput & {
   id: number;
@@ -48,6 +56,11 @@ export type Invoice = InvoiceInput & {
   taxAmount: number;
   total: number;
   paidAt: string | null;
+  payments: Payment[];
+  /** Money received: payments only, without write-offs. */
+  paid: number;
+  /** Total minus payments and write-offs. */
+  balance: number;
 };
 
 export type InvoiceRow = {
@@ -59,6 +72,8 @@ export type InvoiceRow = {
   dueDate: string;
   currency: Currency;
   total: number;
+  paid: number;
+  balance: number;
   status: Status;
   display: DisplayStatus;
 };
@@ -68,6 +83,15 @@ export type CurrencySummary = { currency: Currency; outstanding: number; overdue
 export type Result = { ok: true } | { ok: false; error: string };
 
 export class NotFoundError extends Error {}
+
+/** An edit that conflicts with recorded payments. `field` is the form field to show the message on. */
+export class PaymentConflictError extends Error {
+  field: string;
+  constructor(field: string, message: string) {
+    super(message);
+    this.field = field;
+  }
+}
 
 type Arg = string | number | null;
 
@@ -140,10 +164,15 @@ export function deleteClient(id: number): boolean {
 const INVOICE_COLS = `id, number, client_id AS clientId, bill_to_name AS billToName, bill_to_company AS billToCompany,
   bill_to_address AS billToAddress, issue_date AS issueDate, due_date AS dueDate, currency, tax_rate_bp AS taxRateBp,
   discount_type AS discountType, discount_value AS discountValue, discount_amount AS discountAmount,
+  dp_type AS downPaymentType, dp_value AS downPaymentValue,
   status, subtotal, tax_amount AS taxAmount, total, notes, paid_at AS paidAt`;
 
+// Payments and write-offs together, and payments alone, for the invoice in the enclosing query.
+const SETTLED = "COALESCE((SELECT SUM(amount) FROM payments WHERE invoice_id = invoices.id), 0)";
+const PAID = "COALESCE((SELECT SUM(amount) FROM payments WHERE invoice_id = invoices.id AND kind = 'payment'), 0)";
+
 const ROW_COLS = `id, number, bill_to_name AS billToName, bill_to_company AS billToCompany, issue_date AS issueDate,
-  due_date AS dueDate, currency, total, status`;
+  due_date AS dueDate, currency, total, ${PAID} AS paid, total - ${SETTLED} AS balance, status`;
 
 export function listInvoices(filter: InvoiceFilter, todayDate: string, limit = 1000): InvoiceRow[] {
   const where: string[] = [];
@@ -172,20 +201,56 @@ export function listInvoices(filter: InvoiceFilter, todayDate: string, limit = 1
     ...args,
     limit,
   );
-  return rows.map((row) => ({ ...row, display: displayStatus(row.status, row.dueDate, todayDate) }));
+  return rows.map((row) => ({ ...row, display: displayStatus(row.status, row.dueDate, todayDate, row.paid) }));
 }
 
 export function getInvoice(id: number): Invoice | null {
-  const invoice = one<Omit<Invoice, "items">>(`SELECT ${INVOICE_COLS} FROM invoices WHERE id = ?`, id);
+  const invoice = one<Omit<Invoice, "items" | "payments" | "paid" | "balance">>(
+    `SELECT ${INVOICE_COLS} FROM invoices WHERE id = ?`,
+    id,
+  );
   if (!invoice) return null;
   const items = many<ItemInput>(
     "SELECT description, qty, unit_price AS unitPrice, notes FROM invoice_items WHERE invoice_id = ? ORDER BY position",
     id,
   );
-  return { ...invoice, items };
+  const payments = many<Payment>(
+    "SELECT id, paid_on AS paidOn, amount, kind, note FROM payments WHERE invoice_id = ? ORDER BY paid_on, id",
+    id,
+  );
+  let paid = 0;
+  let settled = 0;
+  for (const payment of payments) {
+    settled += payment.amount;
+    if (payment.kind === "payment") paid += payment.amount;
+  }
+  return { ...invoice, items, payments, paid, balance: invoice.total - settled };
 }
 
-/** Creates (id null) or updates an invoice. Throws RangeError for an unstorable total, NotFoundError for a missing id. */
+/**
+ * Sets a sent or paid invoice to paid when payments and write-offs cover its total (paid on the
+ * latest of their dates), and to sent while something is owed. Runs inside the caller's transaction.
+ * A zero total with nothing settled keeps its status: such an invoice cannot take payments.
+ */
+function settle(id: number): void {
+  const invoice = one<{ status: Status; total: number; settled: number; lastPaidOn: string | null }>(
+    `SELECT status, total, ${SETTLED} AS settled,
+       (SELECT MAX(paid_on) FROM payments WHERE invoice_id = invoices.id) AS lastPaidOn
+     FROM invoices WHERE id = ?`,
+    id,
+  );
+  if (!invoice || invoice.status === "draft") return;
+  if (invoice.settled > 0 && invoice.settled >= invoice.total) {
+    run("UPDATE invoices SET status = 'paid', paid_at = ? WHERE id = ?", invoice.lastPaidOn, id);
+  } else if (invoice.settled < invoice.total) {
+    run("UPDATE invoices SET status = 'sent', paid_at = NULL WHERE id = ?", id);
+  }
+}
+
+/**
+ * Creates (id null) or updates an invoice. Throws RangeError for an unstorable total, NotFoundError for
+ * a missing id, and PaymentConflictError for an edit that recorded payments do not allow.
+ */
 export function saveInvoice(id: number | null, input: InvoiceInput): number {
   const totals = invoiceTotals(input.items, input.taxRateBp, { type: input.discountType, value: input.discountValue });
   return transaction(() => {
@@ -196,27 +261,43 @@ export function saveInvoice(id: number | null, input: InvoiceInput): number {
         : null;
     const fields: Arg[] = [
       clientId, input.billToName, input.billToCompany, input.billToAddress, input.issueDate, input.dueDate,
-      input.currency, input.taxRateBp, input.discountType, input.discountValue, input.notes, totals.subtotal,
-      totals.discountAmount, totals.taxAmount, totals.total,
+      input.currency, input.taxRateBp, input.discountType, input.discountValue, input.downPaymentType,
+      input.downPaymentValue, input.notes, totals.subtotal, totals.discountAmount, totals.taxAmount, totals.total,
     ];
     let invoiceId: number;
     if (id === null) {
       invoiceId = run(
         `INSERT INTO invoices (client_id, bill_to_name, bill_to_company, bill_to_address, issue_date, due_date,
-           currency, tax_rate_bp, discount_type, discount_value, notes, subtotal, discount_amount, tax_amount, total)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           currency, tax_rate_bp, discount_type, discount_value, dp_type, dp_value, notes, subtotal,
+           discount_amount, tax_amount, total)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ...fields,
       ).id;
     } else {
-      const { changes } = run(
+      const current = one<{ currency: Currency; settled: number }>(
+        `SELECT currency, ${SETTLED} AS settled FROM invoices WHERE id = ?`,
+        id,
+      );
+      if (!current) throw new NotFoundError(`Invoice ${id} does not exist`);
+      // Payments are stored in the invoice currency, so they would mean something else after a change.
+      if (current.settled > 0 && input.currency !== current.currency) {
+        throw new PaymentConflictError("currency", "The currency cannot change once payments are recorded.");
+      }
+      if (totals.total < current.settled) {
+        throw new PaymentConflictError(
+          "items",
+          `Payments already cover ${formatMoney(current.settled, current.currency)}; remove one first, or keep the total at least that much.`,
+        );
+      }
+      run(
         `UPDATE invoices SET client_id = ?, bill_to_name = ?, bill_to_company = ?, bill_to_address = ?,
            issue_date = ?, due_date = ?, currency = ?, tax_rate_bp = ?, discount_type = ?, discount_value = ?,
-           notes = ?, subtotal = ?, discount_amount = ?, tax_amount = ?, total = ?, updated_at = datetime('now')
+           dp_type = ?, dp_value = ?, notes = ?, subtotal = ?, discount_amount = ?, tax_amount = ?, total = ?,
+           updated_at = datetime('now')
          WHERE id = ?`,
         ...fields,
         id,
       );
-      if (changes === 0) throw new NotFoundError(`Invoice ${id} does not exist`);
       run("DELETE FROM invoice_items WHERE invoice_id = ?", id);
       invoiceId = id;
     }
@@ -226,6 +307,7 @@ export function saveInvoice(id: number | null, input: InvoiceInput): number {
         invoiceId, position, item.description, item.qty, item.unitPrice, item.notes,
       );
     });
+    settle(invoiceId);
     return invoiceId;
   });
 }
@@ -266,28 +348,60 @@ export function markSent(id: number, number: string): Result {
   });
 }
 
-export function markPaid(id: number, paidAt: string): Result {
+/** Records a payment on a sent invoice whose currency is `currency`. Refuses an amount above the balance. */
+export function recordPayment(id: number, currency: Currency, input: PaymentInput): Result {
   return transaction((): Result => {
-    const invoice = statusOf(id);
+    const invoice = one<{ status: Status; currency: Currency; balance: number; writeOffs: number }>(
+      `SELECT status, currency, total - ${SETTLED} AS balance,
+         (SELECT COUNT(*) FROM payments WHERE invoice_id = invoices.id AND kind = 'write_off') AS writeOffs
+       FROM invoices WHERE id = ?`,
+      id,
+    );
     if (!invoice) return { ok: false, error: "This invoice no longer exists." };
-    if (invoice.status !== "sent") return { ok: false, error: "Only a sent invoice can be marked paid." };
-    run("UPDATE invoices SET status = 'paid', paid_at = ?, updated_at = datetime('now') WHERE id = ?", paidAt, id);
+    if (invoice.status !== "sent") return { ok: false, error: "Payments can only be recorded on a sent invoice." };
+    // The amount was read in this currency; after a change it would mean something else.
+    if (invoice.currency !== currency) {
+      return { ok: false, error: "The invoice changed while this was open. Reload and try again." };
+    }
+    if (input.amount > invoice.balance) {
+      return { ok: false, error: `That is more than the ${formatMoney(invoice.balance, currency)} still owed.` };
+    }
+    const rest = invoice.balance - input.amount;
+    if (input.writeOff && rest === 0) return { ok: false, error: "Nothing is left to write off." };
+    if (input.writeOff && invoice.writeOffs > 0) return { ok: false, error: "This invoice already has a write-off." };
+    run(
+      "INSERT INTO payments (invoice_id, paid_on, amount, kind, note) VALUES (?, ?, ?, 'payment', ?)",
+      id, input.paidOn, input.amount, input.note,
+    );
+    if (input.writeOff) {
+      run("INSERT INTO payments (invoice_id, paid_on, amount, kind) VALUES (?, ?, ?, 'write_off')", id, input.paidOn, rest);
+    }
+    settle(id);
+    run("UPDATE invoices SET updated_at = datetime('now') WHERE id = ?", id);
     return { ok: true };
   });
 }
 
-/** One step back: paid to sent, or sent to draft. The number is kept. */
-export function undoStatus(id: number): Result {
+/** Removes one payment or write-off and works out the status again. False when there is no such payment. */
+export function removePayment(invoiceId: number, paymentId: number): boolean {
+  return transaction(() => {
+    if (run("DELETE FROM payments WHERE id = ? AND invoice_id = ?", paymentId, invoiceId).changes === 0) return false;
+    settle(invoiceId);
+    run("UPDATE invoices SET updated_at = datetime('now') WHERE id = ?", invoiceId);
+    return true;
+  });
+}
+
+/** Sends a sent invoice back to draft while nothing is recorded against it. The number is kept. */
+export function revertToDraft(id: number): Result {
   return transaction((): Result => {
     const invoice = statusOf(id);
     if (!invoice) return { ok: false, error: "This invoice no longer exists." };
-    if (invoice.status === "draft") return { ok: false, error: "A draft has nothing to undo." };
-    const previous: Status = invoice.status === "paid" ? "sent" : "draft";
-    run(
-      "UPDATE invoices SET status = ?, paid_at = NULL, updated_at = datetime('now') WHERE id = ?",
-      previous,
-      id,
-    );
+    if (invoice.status !== "sent") return { ok: false, error: "Only a sent invoice can go back to draft." };
+    if (one("SELECT 1 AS found FROM payments WHERE invoice_id = ?", id)) {
+      return { ok: false, error: "Remove its payments before sending it back to draft." };
+    }
+    run("UPDATE invoices SET status = 'draft', updated_at = datetime('now') WHERE id = ?", id);
     return { ok: true };
   });
 }
@@ -308,6 +422,8 @@ export function duplicateInvoice(id: number, todayDate: string): number | null {
     taxRateBp: source.taxRateBp,
     discountType: source.discountType,
     discountValue: source.discountValue,
+    downPaymentType: source.downPaymentType,
+    downPaymentValue: source.downPaymentValue,
     notes: source.notes,
     items: source.items,
   });
@@ -325,11 +441,15 @@ const CEILING = Number.MAX_SAFE_INTEGER;
 export function dashboard(todayDate: string): { summaries: CurrencySummary[]; latest: InvoiceRow[] } {
   const summaries = many<CurrencySummary>(
     `SELECT currency,
-       MIN(COALESCE(SUM(CASE WHEN status = 'sent' THEN total END), 0), ${CEILING}) AS outstanding,
-       MIN(COALESCE(SUM(CASE WHEN status = 'sent' AND due_date < ? THEN total END), 0), ${CEILING}) AS overdue,
-       MIN(COALESCE(SUM(CASE WHEN status = 'paid' AND substr(paid_at, 1, 7) = ? THEN total END), 0), ${CEILING})
-         AS paidThisMonth
-     FROM invoices GROUP BY currency ORDER BY currency`,
+       MIN(COALESCE(SUM(CASE WHEN status = 'sent' THEN total - settled END), 0), ${CEILING}) AS outstanding,
+       MIN(COALESCE(SUM(CASE WHEN status = 'sent' AND due_date < ? THEN total - settled END), 0), ${CEILING})
+         AS overdue,
+       MIN(COALESCE(SUM(received), 0), ${CEILING}) AS paidThisMonth
+     FROM (SELECT currency, status, due_date, total, ${SETTLED} AS settled,
+             COALESCE((SELECT SUM(amount) FROM payments WHERE invoice_id = invoices.id AND kind = 'payment'
+               AND substr(paid_on, 1, 7) = ?), 0) AS received
+           FROM invoices)
+     GROUP BY currency ORDER BY currency`,
     todayDate,
     todayDate.slice(0, 7),
   );

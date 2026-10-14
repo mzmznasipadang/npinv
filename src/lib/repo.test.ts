@@ -2,7 +2,7 @@ import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { getDb } from "./db.ts";
 import * as repo from "./repo.ts";
-import type { InvoiceInput } from "./repo.ts";
+import type { InvoiceInput, PaymentInput } from "./repo.ts";
 
 const TODAY = "2026-10-12";
 
@@ -18,10 +18,28 @@ function input(overrides: Partial<InvoiceInput> = {}): InvoiceInput {
     taxRateBp: 0,
     discountType: "percent",
     discountValue: 0,
+    downPaymentType: "percent",
+    downPaymentValue: 0,
     notes: "",
     items: [{ description: "Logo design", qty: 2, unitPrice: 1_500_000, notes: "" }],
     ...overrides,
   };
+}
+
+function sentInvoice(number = "INV-2026-001", overrides: Partial<InvoiceInput> = {}): number {
+  const id = repo.saveInvoice(null, input(overrides));
+  assert.deepEqual(repo.markSent(id, number), { ok: true });
+  return id;
+}
+
+function pay(amount: number, paidOn = TODAY): PaymentInput {
+  return { paidOn, amount, note: "", writeOff: false };
+}
+
+function invoice(id: number): repo.Invoice {
+  const found = repo.getInvoice(id);
+  assert.ok(found);
+  return found;
 }
 
 beforeEach(() => {
@@ -163,7 +181,7 @@ test("only a draft can be marked sent", () => {
 test("a number, once assigned, survives revert and re-send", () => {
   const a = repo.saveInvoice(null, input());
   repo.markSent(a, "INV-2026-001");
-  assert.deepEqual(repo.undoStatus(a), { ok: true });
+  assert.deepEqual(repo.revertToDraft(a), { ok: true });
   let inv = repo.getInvoice(a);
   assert.ok(inv);
   assert.equal(inv.status, "draft");
@@ -174,40 +192,158 @@ test("a number, once assigned, survives revert and re-send", () => {
   assert.equal(inv.number, "INV-2026-001");
 });
 
-test("only a sent invoice can be marked paid, and undo clears the paid date", () => {
-  const a = repo.saveInvoice(null, input());
-  assert.equal(repo.markPaid(a, TODAY).ok, false);
-  repo.markSent(a, "INV-2026-001");
-  assert.deepEqual(repo.markPaid(a, TODAY), { ok: true });
-  let inv = repo.getInvoice(a);
-  assert.ok(inv);
+test("payments bring the balance down, and the last one marks the invoice paid on its date", () => {
+  const id = sentInvoice();
+  assert.deepEqual(repo.recordPayment(id, "IDR", { ...pay(1_500_000, "2026-10-01"), note: "DP 50%" }), { ok: true });
+  let inv = invoice(id);
+  assert.equal(inv.status, "sent");
+  assert.equal(inv.paid, 1_500_000);
+  assert.equal(inv.balance, 1_500_000);
+  assert.equal(inv.payments[0].note, "DP 50%");
+  const [row] = repo.listInvoices({}, TODAY);
+  assert.equal(row.display, "partial");
+  assert.equal(row.balance, 1_500_000);
+  assert.equal(row.paid, 1_500_000);
+
+  assert.deepEqual(repo.recordPayment(id, "IDR", pay(1_500_000, "2026-10-10")), { ok: true });
+  inv = invoice(id);
   assert.equal(inv.status, "paid");
-  assert.equal(inv.paidAt, TODAY);
-  assert.deepEqual(repo.undoStatus(a), { ok: true });
-  inv = repo.getInvoice(a);
-  assert.ok(inv);
+  assert.equal(inv.paidAt, "2026-10-10");
+  assert.equal(inv.balance, 0);
+});
+
+test("a single full payment closes the invoice", () => {
+  const id = sentInvoice();
+  assert.deepEqual(repo.recordPayment(id, "IDR", pay(3_000_000)), { ok: true });
+  assert.equal(invoice(id).status, "paid");
+  assert.equal(invoice(id).paidAt, TODAY);
+});
+
+test("a payment above the balance, on a draft or paid invoice, or in another currency is refused", () => {
+  const id = repo.saveInvoice(null, input());
+  assert.equal(repo.recordPayment(id, "IDR", pay(100)).ok, false); // still a draft
+  repo.markSent(id, "INV-2026-001");
+  assert.equal(repo.recordPayment(id, "IDR", pay(3_000_001)).ok, false);
+  assert.equal(repo.recordPayment(id, "USD", pay(100)).ok, false);
+  assert.equal(repo.recordPayment(424242, "IDR", pay(100)).ok, false);
+  // A second tab still shows the full balance after the first tab paid it.
+  assert.deepEqual(repo.recordPayment(id, "IDR", pay(3_000_000)), { ok: true });
+  assert.equal(repo.recordPayment(id, "IDR", pay(3_000_000)).ok, false);
+  assert.equal(invoice(id).payments.length, 1);
+});
+
+test("a short payment can write off the rest, which closes the invoice", () => {
+  const id = sentInvoice();
+  assert.deepEqual(repo.recordPayment(id, "IDR", { ...pay(2_999_000), writeOff: true }), { ok: true });
+  const inv = invoice(id);
+  assert.equal(inv.status, "paid");
+  assert.equal(inv.paid, 2_999_000);
+  assert.equal(inv.balance, 0);
+  assert.deepEqual(
+    inv.payments.map((payment) => [payment.kind, payment.amount]),
+    [["payment", 2_999_000], ["write_off", 1_000]],
+  );
+});
+
+test("a write-off needs something left to write off, and only one is allowed", () => {
+  const id = sentInvoice();
+  assert.equal(repo.recordPayment(id, "IDR", { ...pay(3_000_000), writeOff: true }).ok, false);
+  assert.equal(invoice(id).payments.length, 0);
+  repo.recordPayment(id, "IDR", { ...pay(2_000_000), writeOff: true });
+  const payment = invoice(id).payments.find((entry) => entry.kind === "payment");
+  assert.ok(payment);
+  repo.removePayment(id, payment.id); // reopens, with the write-off still there
+  assert.equal(invoice(id).status, "sent");
+  assert.equal(invoice(id).balance, 2_000_000);
+  assert.equal(repo.recordPayment(id, "IDR", { ...pay(1_000_000), writeOff: true }).ok, false);
+  assert.deepEqual(repo.recordPayment(id, "IDR", pay(2_000_000)), { ok: true });
+  assert.equal(invoice(id).status, "paid");
+});
+
+test("removing a payment reopens a paid invoice, and only its own invoice's payments can be removed", () => {
+  const a = sentInvoice();
+  const b = sentInvoice("INV-2026-002");
+  repo.recordPayment(a, "IDR", pay(3_000_000));
+  const paymentId = invoice(a).payments[0].id;
+  assert.equal(repo.removePayment(b, paymentId), false);
+  assert.equal(repo.removePayment(a, paymentId), true);
+  const inv = invoice(a);
   assert.equal(inv.status, "sent");
   assert.equal(inv.paidAt, null);
+  assert.equal(inv.balance, 3_000_000);
+  assert.equal(repo.removePayment(a, paymentId), false);
 });
 
-test("a draft cannot be undone further", () => {
-  const a = repo.saveInvoice(null, input());
-  assert.equal(repo.undoStatus(a).ok, false);
+test("an edit cannot take the total below what is settled, or change the currency once paid", () => {
+  const id = sentInvoice();
+  repo.recordPayment(id, "IDR", pay(1_000_000));
+  const below = input({ items: [{ description: "x", qty: 1, unitPrice: 999_999, notes: "" }] });
+  assert.throws(
+    () => repo.saveInvoice(id, below),
+    (error) => error instanceof repo.PaymentConflictError && error.field === "items",
+  );
+  assert.throws(
+    () => repo.saveInvoice(id, input({ currency: "USD" })),
+    (error) => error instanceof repo.PaymentConflictError && error.field === "currency",
+  );
+  assert.equal(invoice(id).total, 3_000_000); // nothing was written
+
+  repo.saveInvoice(id, input({ items: [{ description: "x", qty: 1, unitPrice: 1_000_000, notes: "" }] }));
+  assert.equal(invoice(id).status, "paid"); // the total now equals what was paid
+  repo.saveInvoice(id, input()); // back to 3,000,000
+  const inv = invoice(id);
+  assert.equal(inv.status, "sent");
+  assert.equal(inv.paidAt, null);
+  assert.equal(inv.balance, 2_000_000);
 });
 
-test("an invoice in any status can be deleted, with its items", () => {
+test("only a sent invoice with no payments can go back to draft", () => {
+  const draft = repo.saveInvoice(null, input());
+  assert.equal(repo.revertToDraft(draft).ok, false);
+  const id = sentInvoice();
+  repo.recordPayment(id, "IDR", pay(100));
+  assert.equal(repo.revertToDraft(id).ok, false);
+  repo.recordPayment(id, "IDR", pay(2_999_900));
+  assert.equal(repo.revertToDraft(id).ok, false); // paid
+  for (const payment of invoice(id).payments) repo.removePayment(id, payment.id);
+  assert.deepEqual(repo.revertToDraft(id), { ok: true });
+  assert.equal(invoice(id).status, "draft");
+});
+
+test("a zero-total invoice cannot take payments, and an old paid one stays paid when saved", () => {
+  const free = input({ discountType: "percent", discountValue: 10000 });
+  const id = sentInvoice("INV-2026-001", free);
+  assert.equal(repo.recordPayment(id, "IDR", pay(1)).ok, false);
+  assert.equal(invoice(id).status, "sent");
+  const old = sentInvoice("INV-2026-002", free);
+  getDb().exec(`UPDATE invoices SET status = 'paid', paid_at = '2026-10-01' WHERE id = ${old}`); // as migrated
+  repo.saveInvoice(old, free);
+  assert.equal(invoice(old).status, "paid");
+});
+
+test("the down payment request is stored with the invoice", () => {
+  const id = repo.saveInvoice(null, input({ downPaymentType: "amount", downPaymentValue: 1_000_000 }));
+  const inv = invoice(id);
+  assert.equal(inv.downPaymentType, "amount");
+  assert.equal(inv.downPaymentValue, 1_000_000);
+});
+
+test("an invoice in any status can be deleted, with its items and payments", () => {
   const draft = repo.saveInvoice(null, input());
   const sent = repo.saveInvoice(null, input());
   const paid = repo.saveInvoice(null, input());
   repo.markSent(sent, "INV-2026-001");
   repo.markSent(paid, "INV-2026-002");
-  repo.markPaid(paid, TODAY);
+  repo.recordPayment(paid, "IDR", pay(3_000_000));
+  repo.recordPayment(sent, "IDR", pay(1_000));
   for (const id of [draft, sent, paid]) {
     assert.equal(repo.deleteInvoice(id), true);
     assert.equal(repo.getInvoice(id), null);
   }
   assert.equal(repo.deleteInvoice(draft), false);
   assert.equal(getDb().prepare("SELECT COUNT(*) AS n FROM invoice_items").get()?.n, 0);
+  assert.equal(getDb().prepare("SELECT COUNT(*) AS n FROM payments").get()?.n, 0);
+  assert.deepEqual(repo.dashboard(TODAY).summaries, []);
 });
 
 test("deleting the newest numbered invoice frees its number for the next one", () => {
@@ -221,9 +357,10 @@ test("deleting the newest numbered invoice frees its number for the next one", (
 test("duplicate makes an unnumbered draft dated today with the same content", () => {
   const a = repo.saveInvoice(
     null,
-    input({ issueDate: "2026-09-01", dueDate: "2026-09-15", taxRateBp: 1100, currency: "USD", discountType: "amount", discountValue: 500 }),
+    input({ issueDate: "2026-09-01", dueDate: "2026-09-15", taxRateBp: 1100, currency: "USD", discountType: "amount", discountValue: 500, downPaymentType: "percent", downPaymentValue: 5000 }),
   );
   repo.markSent(a, "INV-2026-001");
+  repo.recordPayment(a, "USD", pay(500));
   const b = repo.duplicateInvoice(a, TODAY);
   assert.ok(b);
   const copy = repo.getInvoice(b);
@@ -237,6 +374,10 @@ test("duplicate makes an unnumbered draft dated today with the same content", ()
   assert.equal(copy.discountType, "amount");
   assert.equal(copy.discountAmount, 500);
   assert.equal(copy.items[0].description, "Logo design");
+  assert.equal(copy.downPaymentType, "percent");
+  assert.equal(copy.downPaymentValue, 5000);
+  assert.deepEqual(copy.payments, []);
+  assert.equal(copy.balance, copy.total);
   assert.equal(repo.duplicateInvoice(424242, TODAY), null);
 });
 
@@ -264,7 +405,7 @@ test("search matches number, name or company, and treats % literally", () => {
   assert.equal(repo.listInvoices({ q: "zzz" }, TODAY).length, 0);
 });
 
-test("the dashboard totals each currency separately", () => {
+test("the dashboard counts balances owed and money received this month, per currency", () => {
   const idrLate = repo.saveInvoice(null, input({ issueDate: "2026-09-01", dueDate: "2026-10-01" })); // 3,000,000
   const idrOpen = repo.saveInvoice(null, input({ items: [{ description: "x", qty: 1, unitPrice: 500_000, notes: "" }] }));
   const idrPaid = repo.saveInvoice(null, input({ items: [{ description: "x", qty: 1, unitPrice: 200_000, notes: "" }] }));
@@ -276,12 +417,13 @@ test("the dashboard totals each currency separately", () => {
   repo.markSent(idrPaid, "INV-2026-003");
   repo.markSent(idrPaidLastMonth, "INV-2026-004");
   repo.markSent(usdOpen, "INV-2026-005");
-  repo.markPaid(idrPaid, "2026-10-05");
-  repo.markPaid(idrPaidLastMonth, "2026-09-30");
+  repo.recordPayment(idrLate, "IDR", pay(1_000_000, "2026-10-02")); // 2,000,000 still owed, and overdue
+  repo.recordPayment(idrPaid, "IDR", { ...pay(150_000, "2026-10-05"), writeOff: true }); // 50,000 written off is not income
+  repo.recordPayment(idrPaidLastMonth, "IDR", pay(999, "2026-09-30"));
 
   const { summaries, latest } = repo.dashboard(TODAY);
   assert.deepEqual(summaries, [
-    { currency: "IDR", outstanding: 3_500_000, overdue: 3_000_000, paidThisMonth: 200_000 },
+    { currency: "IDR", outstanding: 2_500_000, overdue: 2_000_000, paidThisMonth: 1_150_000 },
     { currency: "USD", outstanding: 15_000, overdue: 0, paidThisMonth: 0 },
   ]);
   assert.equal(latest.length, 6);
