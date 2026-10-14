@@ -71,23 +71,50 @@ ALTER TABLE invoices ADD COLUMN discount_value INTEGER NOT NULL DEFAULT 0
 ALTER TABLE invoices ADD COLUMN discount_amount INTEGER NOT NULL DEFAULT 0;
 `;
 
-function open(): DatabaseSync {
-  const path = process.env.DATABASE_PATH ?? "data/npinv.db";
-  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-  const db = new DatabaseSync(path);
-  db.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
-  // The version check and the schema run in one write transaction, so two
-  // processes starting together cannot both create the tables.
+// Version 3: payments, and a down payment request per invoice. Every paid invoice becomes one
+// payment of its full total, so its status and the dashboard read the same as before.
+const PAYMENTS = `
+CREATE TABLE payments (
+  id INTEGER PRIMARY KEY,
+  invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+  paid_on TEXT NOT NULL,
+  amount INTEGER NOT NULL CHECK (amount > 0),
+  kind TEXT NOT NULL DEFAULT 'payment' CHECK (kind IN ('payment', 'write_off')),
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX payments_invoice ON payments (invoice_id, paid_on);
+ALTER TABLE invoices ADD COLUMN dp_type TEXT NOT NULL DEFAULT 'percent' CHECK (dp_type IN ('percent', 'amount'));
+ALTER TABLE invoices ADD COLUMN dp_value INTEGER NOT NULL DEFAULT 0
+  CHECK (dp_value >= 0 AND (dp_type = 'amount' OR dp_value <= 10000));
+INSERT INTO payments (invoice_id, paid_on, amount)
+  SELECT id, COALESCE(paid_at, issue_date), total FROM invoices WHERE status = 'paid' AND total > 0;
+`;
+
+// Step i takes the database from version i to version i + 1.
+const STEPS = [SCHEMA, DISCOUNT, PAYMENTS];
+
+/** Brings the database up to `target`, the latest version by default. */
+export function migrate(db: DatabaseSync, target = STEPS.length): void {
+  // The version check and the steps run in one write transaction, so two
+  // processes starting together cannot both apply them, and a failed step changes nothing.
   db.exec("BEGIN IMMEDIATE");
   try {
     const { user_version: version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
-    if (version < 1) db.exec(`${SCHEMA} PRAGMA user_version = 1;`);
-    if (version < 2) db.exec(`${DISCOUNT} PRAGMA user_version = 2;`);
+    for (let step = version; step < target; step++) db.exec(`${STEPS[step]} PRAGMA user_version = ${step + 1};`);
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
   }
+}
+
+function open(): DatabaseSync {
+  const path = process.env.DATABASE_PATH ?? "data/npinv.db";
+  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+  const db = new DatabaseSync(path);
+  db.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+  migrate(db);
   return db;
 }
 
