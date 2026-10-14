@@ -74,8 +74,9 @@ Schema is applied at startup and versioned with `PRAGMA user_version` so later c
 - `issue_date`, `due_date`
 - `currency` — `IDR` or `USD`
 - `tax_rate_bp` — `0` means no tax line
+- `discount_type` — `percent` or `amount`; `discount_value` — basis points for a percentage, the smallest unit for an amount; `0` means no discount line (added in schema version 2)
 - `status` — `draft`, `sent` or `paid`
-- `subtotal`, `tax_amount`, `total` — computed by `money.ts` on every save
+- `subtotal`, `discount_amount`, `tax_amount`, `total` — computed by `money.ts` on every save
 - `notes`, `paid_at`, `created_at`, `updated_at`
 
 **invoice_items** — `id`, `invoice_id`, `position`, `description`, `qty`, `unit_price`, `notes`
@@ -83,14 +84,14 @@ Schema is applied at startup and versioned with `PRAGMA user_version` so later c
 ### Rules
 
 - **Amounts** are integers in the currency's smallest unit: whole rupiah for IDR, cents for USD. No floating point.
-- **Totals:** line = qty × unit price; subtotal = sum of lines; tax = subtotal × rate, rounded half up to the smallest unit; total = subtotal + tax.
+- **Totals:** line = qty × unit price; subtotal = sum of lines; discount = subtotal × percentage (rounded half up) or a fixed amount no larger than the subtotal; tax = (subtotal − discount) × rate, rounded half up to the smallest unit, since PPN is charged on the discounted price; total = subtotal − discount + tax.
 - **Quantity** is a whole number of at least 1.
 - **Numbering:** `INV-2026-001` — prefix, year of the issue date, sequence padded to three digits. The number is assigned the first time an invoice is marked sent. It is prefilled with the next in sequence for that year and can be edited at that moment (to continue an existing series), must be unique, and never changes afterwards.
 - **Status changes:** draft → sent → paid. Undo is allowed one step back (paid → sent, sent → draft); a number, once assigned, is kept.
 - **Overdue** is not stored. An invoice is overdue when it is `sent` and its due date is before today.
 - **Editing** is allowed in any status.
-- **Deleting** is allowed only for drafts that have never been numbered, with a confirmation. A numbered invoice cannot be deleted, so the sequence has no gaps and no number is ever reused; one sent by mistake is reverted to draft and edited into the next real invoice.
-- **Duplicate** creates a new draft with the same client, items, currency and tax, today's issue date and no number.
+- **Deleting** is allowed in any status, with a confirmation. A numbered invoice also needs its number typed out. Deleting the latest numbered invoice lets the next one reuse its number; deleting an older one leaves a gap in the sequence. Victor chose this over a void status.
+- **Duplicate** creates a new draft with the same client, items, currency, discount and tax, today's issue date and no number.
 - Deleting a client keeps its invoices; they retain the copied bill-to details.
 
 ## 5. Screens
@@ -117,7 +118,7 @@ The app shell is a sidebar (logo, navigation, theme toggle) plus content area. I
 - PPN switch with rate, prefilled from settings.
 - Notes, prefilled from settings.
 - Live subtotal, tax and total.
-- Actions: Save, Mark sent, Mark paid (with paid date, default today), undo status, Duplicate, Delete (unnumbered drafts only), Download PDF.
+- Actions: Save, Mark sent, Mark paid (with paid date, default today), undo status, Duplicate, Delete, Download PDF.
 
 **Clients (`/clients`)** — list, add, edit, delete.
 
@@ -234,7 +235,7 @@ Server changes this makes:
 - Telegram bot (v2): long polling, so no public URL is needed; sends the invoice PDF and due or overdue reminders to Victor; needs a server-side PDF renderer and a bot token in a mode-600 `.env`.
 - Charts, login, multiple users.
 - Emailing invoices, recurring invoices, online payments.
-- Discounts, decimal quantities, a void or cancelled status, converting between currencies.
+- Decimal quantities, a void or cancelled status, converting between currencies.
 - CI, an Uptime Kuma monitor, off-box backups.
 
 ## 13. Risks
@@ -255,3 +256,4 @@ Server changes this makes:
 - **Reboot:** not tested by rebooting the server; the container's `unless-stopped` policy and the enabled Docker service were checked instead.
 - **Live check:** no invoice was marked sent on the live app during verification, so `INV-2026-001` is still free. A labelled draft was created, printed and deleted.
 - **After the final review:** one invoice's total is capped at 10 trillion in the smallest unit (Rp 10 trillion or $100 billion), and dashboard sums are capped at the largest exact integer, so absurd amounts give an error instead of breaking the dashboard. Invoice numbers are stored in upper case and compared without regard to letter case. Quantity, price and rate fields are text inputs with a numeric keypad hint, because a number input changes its value when the wheel scrolls over it. The new-invoice form keeps a half-typed draft but starts again when the date or the defaults change.
+- **Discount and delete (2026-10-14):** one discount per invoice, as a percentage or a fixed amount, taken off before tax. Existing databases gain the three discount columns through schema version 2, so their totals do not change. Any invoice can now be deleted; numbered ones need the number typed to confirm.

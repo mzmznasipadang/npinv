@@ -10,23 +10,36 @@ const DECIMALS: Record<Currency, number> = { IDR: 0, USD: 2 };
 export const MAX_TOTAL = 10_000_000_000_000;
 
 export type Line = { qty: number; unitPrice: number };
-export type Totals = { subtotal: number; taxAmount: number; total: number };
+/** A percentage in basis points, or a fixed amount in the smallest unit. */
+export type Discount = { type: "percent" | "amount"; value: number };
+export type Totals = { subtotal: number; discountAmount: number; taxAmount: number; total: number };
+
+const NO_DISCOUNT: Discount = { type: "percent", value: 0 };
 
 export function lineTotal(line: Line): number {
   return line.qty * line.unitPrice;
 }
 
 /**
- * Totals in the smallest unit. Tax is rounded half up.
- * Throws RangeError when the total is above MAX_TOTAL.
+ * Totals in the smallest unit. The discount comes off before tax, since PPN is charged on the
+ * discounted price. A percentage discount and the tax are rounded half up.
+ * Throws RangeError when the subtotal or total is above MAX_TOTAL, or the discount is above the subtotal.
  */
-export function invoiceTotals(lines: readonly Line[], taxRateBp: number): Totals {
+export function invoiceTotals(lines: readonly Line[], taxRateBp: number, discount: Discount = NO_DISCOUNT): Totals {
   let subtotal = 0n;
   for (const line of lines) subtotal += BigInt(line.qty) * BigInt(line.unitPrice);
-  const taxAmount = (subtotal * BigInt(taxRateBp) + 5000n) / 10000n;
-  const total = subtotal + taxAmount;
-  if (total > BigInt(MAX_TOTAL)) throw new RangeError("Amount is too large");
-  return { subtotal: Number(subtotal), taxAmount: Number(taxAmount), total: Number(total) };
+  const discountAmount =
+    discount.type === "percent" ? (subtotal * BigInt(discount.value) + 5000n) / 10000n : BigInt(discount.value);
+  if (discountAmount > subtotal) throw new RangeError("Discount is larger than the subtotal");
+  const taxAmount = ((subtotal - discountAmount) * BigInt(taxRateBp) + 5000n) / 10000n;
+  const total = subtotal - discountAmount + taxAmount;
+  if (subtotal > BigInt(MAX_TOTAL) || total > BigInt(MAX_TOTAL)) throw new RangeError("Amount is too large");
+  return {
+    subtotal: Number(subtotal),
+    discountAmount: Number(discountAmount),
+    taxAmount: Number(taxAmount),
+    total: Number(total),
+  };
 }
 
 export function formatMoney(minor: number, currency: Currency): string {

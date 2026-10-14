@@ -95,9 +95,7 @@ export async function duplicateInvoiceAction(id: number): Promise<FormState> {
 }
 
 export async function deleteInvoiceAction(id: number): Promise<FormState> {
-  if (!isId(id) || !repo.deleteInvoice(id)) {
-    return { message: "Only a draft that was never numbered can be deleted." };
-  }
+  if (!isId(id) || !repo.deleteInvoice(id)) return { message: GONE };
   refresh();
   redirect("/invoices");
 }

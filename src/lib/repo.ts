@@ -1,6 +1,6 @@
 import { getDb, transaction } from "./db.ts";
 import { invoiceTotals } from "./money.ts";
-import type { Currency } from "./money.ts";
+import type { Currency, Discount } from "./money.ts";
 import { addDays, displayStatus, formatNumber, nextSequence } from "./rules.ts";
 import type { DisplayStatus, Status } from "./rules.ts";
 
@@ -32,6 +32,9 @@ export type InvoiceInput = {
   dueDate: string;
   currency: Currency;
   taxRateBp: number;
+  discountType: Discount["type"];
+  /** Basis points for a percentage, the smallest unit for an amount. Zero means no discount. */
+  discountValue: number;
   notes: string;
   items: ItemInput[];
 };
@@ -41,6 +44,7 @@ export type Invoice = InvoiceInput & {
   number: string | null;
   status: Status;
   subtotal: number;
+  discountAmount: number;
   taxAmount: number;
   total: number;
   paidAt: string | null;
@@ -135,6 +139,7 @@ export function deleteClient(id: number): boolean {
 
 const INVOICE_COLS = `id, number, client_id AS clientId, bill_to_name AS billToName, bill_to_company AS billToCompany,
   bill_to_address AS billToAddress, issue_date AS issueDate, due_date AS dueDate, currency, tax_rate_bp AS taxRateBp,
+  discount_type AS discountType, discount_value AS discountValue, discount_amount AS discountAmount,
   status, subtotal, tax_amount AS taxAmount, total, notes, paid_at AS paidAt`;
 
 const ROW_COLS = `id, number, bill_to_name AS billToName, bill_to_company AS billToCompany, issue_date AS issueDate,
@@ -182,7 +187,7 @@ export function getInvoice(id: number): Invoice | null {
 
 /** Creates (id null) or updates an invoice. Throws RangeError for an unstorable total, NotFoundError for a missing id. */
 export function saveInvoice(id: number | null, input: InvoiceInput): number {
-  const totals = invoiceTotals(input.items, input.taxRateBp);
+  const totals = invoiceTotals(input.items, input.taxRateBp, { type: input.discountType, value: input.discountValue });
   return transaction(() => {
     // The client may have been deleted while the form was open.
     const clientId =
@@ -191,20 +196,23 @@ export function saveInvoice(id: number | null, input: InvoiceInput): number {
         : null;
     const fields: Arg[] = [
       clientId, input.billToName, input.billToCompany, input.billToAddress, input.issueDate, input.dueDate,
-      input.currency, input.taxRateBp, input.notes, totals.subtotal, totals.taxAmount, totals.total,
+      input.currency, input.taxRateBp, input.discountType, input.discountValue, input.notes, totals.subtotal,
+      totals.discountAmount, totals.taxAmount, totals.total,
     ];
     let invoiceId: number;
     if (id === null) {
       invoiceId = run(
         `INSERT INTO invoices (client_id, bill_to_name, bill_to_company, bill_to_address, issue_date, due_date,
-           currency, tax_rate_bp, notes, subtotal, tax_amount, total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           currency, tax_rate_bp, discount_type, discount_value, notes, subtotal, discount_amount, tax_amount, total)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ...fields,
       ).id;
     } else {
       const { changes } = run(
         `UPDATE invoices SET client_id = ?, bill_to_name = ?, bill_to_company = ?, bill_to_address = ?,
-           issue_date = ?, due_date = ?, currency = ?, tax_rate_bp = ?, notes = ?, subtotal = ?, tax_amount = ?,
-           total = ?, updated_at = datetime('now') WHERE id = ?`,
+           issue_date = ?, due_date = ?, currency = ?, tax_rate_bp = ?, discount_type = ?, discount_value = ?,
+           notes = ?, subtotal = ?, discount_amount = ?, tax_amount = ?, total = ?, updated_at = datetime('now')
+         WHERE id = ?`,
         ...fields,
         id,
       );
@@ -298,14 +306,16 @@ export function duplicateInvoice(id: number, todayDate: string): number | null {
     dueDate: addDays(todayDate, defaultDueDays),
     currency: source.currency,
     taxRateBp: source.taxRateBp,
+    discountType: source.discountType,
+    discountValue: source.discountValue,
     notes: source.notes,
     items: source.items,
   });
 }
 
-/** Only a draft that was never numbered can be deleted. */
+/** Deletes an invoice in any status, with its items. Its number may then be reused or leave a gap. */
 export function deleteInvoice(id: number): boolean {
-  return run("DELETE FROM invoices WHERE id = ? AND status = 'draft' AND number IS NULL", id).changes > 0;
+  return run("DELETE FROM invoices WHERE id = ?", id).changes > 0;
 }
 
 // Sums are capped at the largest integer a JavaScript number holds exactly; node:sqlite

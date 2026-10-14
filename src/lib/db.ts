@@ -62,6 +62,15 @@ CREATE TABLE invoice_items (
 CREATE INDEX invoice_items_invoice ON invoice_items (invoice_id, position);
 `;
 
+// Version 2: one discount per invoice. Existing invoices get none, so their totals are unchanged.
+const DISCOUNT = `
+ALTER TABLE invoices ADD COLUMN discount_type TEXT NOT NULL DEFAULT 'percent'
+  CHECK (discount_type IN ('percent', 'amount'));
+ALTER TABLE invoices ADD COLUMN discount_value INTEGER NOT NULL DEFAULT 0
+  CHECK (discount_value >= 0 AND (discount_type = 'amount' OR discount_value <= 10000));
+ALTER TABLE invoices ADD COLUMN discount_amount INTEGER NOT NULL DEFAULT 0;
+`;
+
 function open(): DatabaseSync {
   const path = process.env.DATABASE_PATH ?? "data/npinv.db";
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -73,6 +82,7 @@ function open(): DatabaseSync {
   try {
     const { user_version: version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
     if (version < 1) db.exec(`${SCHEMA} PRAGMA user_version = 1;`);
+    if (version < 2) db.exec(`${DISCOUNT} PRAGMA user_version = 2;`);
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");

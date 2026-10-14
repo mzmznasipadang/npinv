@@ -16,6 +16,8 @@ function input(overrides: Partial<InvoiceInput> = {}): InvoiceInput {
     dueDate: "2026-10-26",
     currency: "IDR",
     taxRateBp: 0,
+    discountType: "percent",
+    discountValue: 0,
     notes: "",
     items: [{ description: "Logo design", qty: 2, unitPrice: 1_500_000, notes: "" }],
     ...overrides,
@@ -63,6 +65,18 @@ test("a new invoice is an unnumbered draft with computed totals and ordered item
   assert.equal(inv.total, 2_220_000);
   assert.deepEqual(inv.items.map((it) => it.description), ["First", "Second"]);
   assert.equal(inv.items[0].notes, "a");
+});
+
+test("a discount is saved with its computed amount and comes off before tax", () => {
+  const id = repo.saveInvoice(null, input({ taxRateBp: 1100, discountType: "percent", discountValue: 1000 }));
+  const inv = repo.getInvoice(id);
+  assert.ok(inv);
+  assert.equal(inv.subtotal, 3_000_000);
+  assert.equal(inv.discountType, "percent");
+  assert.equal(inv.discountValue, 1000);
+  assert.equal(inv.discountAmount, 300_000);
+  assert.equal(inv.taxAmount, 297_000);
+  assert.equal(inv.total, 2_997_000);
 });
 
 test("saving again replaces the items and recomputes the totals", () => {
@@ -181,20 +195,34 @@ test("a draft cannot be undone further", () => {
   assert.equal(repo.undoStatus(a).ok, false);
 });
 
-test("only a draft that was never numbered can be deleted", () => {
-  const plain = repo.saveInvoice(null, input());
-  const numbered = repo.saveInvoice(null, input());
-  repo.markSent(numbered, "INV-2026-001");
-  assert.equal(repo.deleteInvoice(numbered), false); // sent
-  repo.undoStatus(numbered);
-  assert.equal(repo.deleteInvoice(numbered), false); // draft, but numbered
-  assert.equal(repo.deleteInvoice(plain), true);
-  assert.equal(repo.getInvoice(plain), null);
-  assert.ok(repo.getInvoice(numbered));
+test("an invoice in any status can be deleted, with its items", () => {
+  const draft = repo.saveInvoice(null, input());
+  const sent = repo.saveInvoice(null, input());
+  const paid = repo.saveInvoice(null, input());
+  repo.markSent(sent, "INV-2026-001");
+  repo.markSent(paid, "INV-2026-002");
+  repo.markPaid(paid, TODAY);
+  for (const id of [draft, sent, paid]) {
+    assert.equal(repo.deleteInvoice(id), true);
+    assert.equal(repo.getInvoice(id), null);
+  }
+  assert.equal(repo.deleteInvoice(draft), false);
+  assert.equal(getDb().prepare("SELECT COUNT(*) AS n FROM invoice_items").get()?.n, 0);
+});
+
+test("deleting the newest numbered invoice frees its number for the next one", () => {
+  const a = repo.saveInvoice(null, input());
+  repo.markSent(a, "INV-2026-001");
+  repo.deleteInvoice(a);
+  const b = repo.saveInvoice(null, input());
+  assert.equal(repo.suggestNumber(b), "INV-2026-001");
 });
 
 test("duplicate makes an unnumbered draft dated today with the same content", () => {
-  const a = repo.saveInvoice(null, input({ issueDate: "2026-09-01", dueDate: "2026-09-15", taxRateBp: 1100, currency: "USD" }));
+  const a = repo.saveInvoice(
+    null,
+    input({ issueDate: "2026-09-01", dueDate: "2026-09-15", taxRateBp: 1100, currency: "USD", discountType: "amount", discountValue: 500 }),
+  );
   repo.markSent(a, "INV-2026-001");
   const b = repo.duplicateInvoice(a, TODAY);
   assert.ok(b);
@@ -206,6 +234,8 @@ test("duplicate makes an unnumbered draft dated today with the same content", ()
   assert.equal(copy.dueDate, "2026-10-26");
   assert.equal(copy.currency, "USD");
   assert.equal(copy.taxRateBp, 1100);
+  assert.equal(copy.discountType, "amount");
+  assert.equal(copy.discountAmount, 500);
   assert.equal(copy.items[0].description, "Logo design");
   assert.equal(repo.duplicateInvoice(424242, TODAY), null);
 });

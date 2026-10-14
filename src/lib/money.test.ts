@@ -9,6 +9,7 @@ test("line total is quantity times unit price", () => {
 test("totals without tax", () => {
   assert.deepEqual(invoiceTotals([{ qty: 2, unitPrice: 1_500_000 }, { qty: 1, unitPrice: 500_000 }], 0), {
     subtotal: 3_500_000,
+    discountAmount: 0,
     taxAmount: 0,
     total: 3_500_000,
   });
@@ -17,6 +18,7 @@ test("totals without tax", () => {
 test("11% tax on one million rupiah", () => {
   assert.deepEqual(invoiceTotals([{ qty: 1, unitPrice: 1_000_000 }], 1100), {
     subtotal: 1_000_000,
+    discountAmount: 0,
     taxAmount: 110_000,
     total: 1_110_000,
   });
@@ -29,11 +31,43 @@ test("tax rounds half up to the smallest unit", () => {
 });
 
 test("no lines gives zero totals", () => {
-  assert.deepEqual(invoiceTotals([], 1100), { subtotal: 0, taxAmount: 0, total: 0 });
+  assert.deepEqual(invoiceTotals([], 1100), { subtotal: 0, discountAmount: 0, taxAmount: 0, total: 0 });
 });
 
 test("a total too large to store exactly throws RangeError", () => {
   assert.throws(() => invoiceTotals([{ qty: 100_000, unitPrice: 1_000_000_000_000 }], 0), RangeError);
+});
+
+test("a discount comes off before tax", () => {
+  assert.deepEqual(invoiceTotals([{ qty: 1, unitPrice: 1_000_000 }], 1100, { type: "percent", value: 1000 }), {
+    subtotal: 1_000_000,
+    discountAmount: 100_000,
+    taxAmount: 99_000,
+    total: 999_000,
+  });
+  assert.deepEqual(invoiceTotals([{ qty: 1, unitPrice: 1_000_000 }], 1100, { type: "amount", value: 250_000 }), {
+    subtotal: 1_000_000,
+    discountAmount: 250_000,
+    taxAmount: 82_500,
+    total: 832_500,
+  });
+});
+
+test("a percentage discount rounds half up, and 100% leaves nothing", () => {
+  assert.equal(invoiceTotals([{ qty: 1, unitPrice: 5 }], 0, { type: "percent", value: 1000 }).discountAmount, 1); // 0.5 -> 1
+  assert.equal(invoiceTotals([{ qty: 1, unitPrice: 999 }], 1100, { type: "percent", value: 10000 }).total, 0);
+});
+
+test("a fixed discount above the subtotal throws RangeError", () => {
+  assert.equal(invoiceTotals([{ qty: 1, unitPrice: 100 }], 0, { type: "amount", value: 100 }).total, 0);
+  assert.throws(() => invoiceTotals([{ qty: 1, unitPrice: 100 }], 0, { type: "amount", value: 101 }), RangeError);
+});
+
+test("a subtotal too large to store is refused even when a discount brings the total down", () => {
+  assert.throws(
+    () => invoiceTotals([{ qty: 2, unitPrice: 10_000_000_000_000 }], 0, { type: "percent", value: 9000 }),
+    RangeError,
+  );
 });
 
 test("formats rupiah without decimals and dollars with two", () => {

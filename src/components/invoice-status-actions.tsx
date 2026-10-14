@@ -89,18 +89,22 @@ export function InvoiceStatusActions({ id, status, number, suggestedNumber, toda
           </a>
         </Button>
       )}
-      {status === "draft" && number === null ? (
-        <ConfirmButton
-          label="Delete"
-          title="Delete this draft?"
-          description="The draft is removed for good. This cannot be undone."
-          confirmLabel="Delete draft"
-          action={() => deleteInvoiceAction(id)}
-          disabled={blocked}
-        >
-          <Trash2 />
-        </ConfirmButton>
-      ) : null}
+      {/* A numbered invoice may be on record with the client, so deleting one takes its number typed out. */}
+      <ConfirmButton
+        label="Delete"
+        title={number ? `Delete ${number}?` : "Delete this draft?"}
+        description={
+          number
+            ? "The invoice is removed for good and no longer counts on the dashboard. If it is the latest, its number goes to the next invoice; otherwise the sequence keeps a gap. This cannot be undone."
+            : "The draft is removed for good. This cannot be undone."
+        }
+        confirmLabel={number ? "Delete invoice" : "Delete draft"}
+        confirmText={number ?? undefined}
+        action={() => deleteInvoiceAction(id)}
+        disabled={blocked}
+      >
+        <Trash2 />
+      </ConfirmButton>
       {dirty ? <p className="w-full text-sm text-muted-foreground">Save your changes to use these actions.</p> : null}
     </div>
   );

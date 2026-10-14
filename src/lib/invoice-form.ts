@@ -18,6 +18,9 @@ export function blankInvoiceValues(s: Settings, todayDate: string): InvoiceFormV
     currency: s.defaultCurrency,
     taxEnabled: false,
     taxRate: percentToInput(s.defaultTaxRateBp),
+    discountEnabled: false,
+    discountType: "percent",
+    discount: "",
     notes: s.defaultNotes,
     items: [blankItem()],
   };
@@ -34,6 +37,14 @@ export function invoiceToValues(inv: Invoice, s: Settings): InvoiceFormValues {
     currency: inv.currency,
     taxEnabled: inv.taxRateBp > 0,
     taxRate: percentToInput(inv.taxRateBp > 0 ? inv.taxRateBp : s.defaultTaxRateBp),
+    discountEnabled: inv.discountValue > 0,
+    discountType: inv.discountType,
+    discount:
+      inv.discountValue === 0
+        ? ""
+        : inv.discountType === "amount"
+          ? amountToInput(inv.discountValue, inv.currency)
+          : percentToInput(inv.discountValue),
     notes: inv.notes,
     items: inv.items.map((item) => ({
       description: item.description,

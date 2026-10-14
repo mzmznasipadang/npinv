@@ -18,7 +18,7 @@ import { useServerForm } from "@/hooks/use-actions";
 import { saveInvoiceAction } from "@/lib/actions";
 import { blankItem } from "@/lib/invoice-form";
 import { formatMoney, invoiceTotals, parseAmount, parsePercent } from "@/lib/money";
-import type { Currency, Line, Totals } from "@/lib/money";
+import type { Currency, Discount, Line, Totals } from "@/lib/money";
 import type { Client } from "@/lib/repo";
 import type { InvoiceFormValues, ItemFormValues } from "@/lib/schemas";
 
@@ -32,7 +32,15 @@ type InvoiceFormProps = {
   status?: Omit<InvoiceStatusProps, "dirty">;
 };
 
-type TextField = "billToName" | "billToCompany" | "billToAddress" | "issueDate" | "dueDate" | "taxRate" | "notes";
+type TextField =
+  | "billToName"
+  | "billToCompany"
+  | "billToAddress"
+  | "issueDate"
+  | "dueDate"
+  | "taxRate"
+  | "discount"
+  | "notes";
 
 const NO_CLIENT = "none";
 const QTY = /^[1-9]\d{0,5}$/;
@@ -48,8 +56,15 @@ function liveTotals(values: InvoiceFormValues, currency: Currency): Totals | nul
   }
   const taxRateBp = values.taxEnabled ? parsePercent(values.taxRate) : 0;
   if (taxRateBp === null) return null;
+  const type: Discount["type"] = values.discountType === "amount" ? "amount" : "percent";
+  const discount = !values.discountEnabled
+    ? 0
+    : type === "amount"
+      ? parseAmount(values.discount, currency)
+      : parsePercent(values.discount);
+  if (discount === null) return null;
   try {
-    return invoiceTotals(lines, taxRateBp);
+    return invoiceTotals(lines, taxRateBp, { type, value: discount });
   } catch {
     return null;
   }
@@ -199,6 +214,36 @@ export function InvoiceForm({ invoiceId, initial, clients, taxLabel, status }: I
               </Field>
               <div className="flex items-center gap-3">
                 <Switch
+                  id={fid("discountEnabled")}
+                  checked={values.discountEnabled}
+                  onCheckedChange={(checked) => set("discountEnabled", checked)}
+                />
+                <Label htmlFor={fid("discountEnabled")}>Add discount</Label>
+              </div>
+              {values.discountEnabled ? (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field id={fid("discountType")} label="Discount as" error={errors.discountType}>
+                    <Select value={values.discountType} onValueChange={(value) => set("discountType", value)}>
+                      <SelectTrigger id={fid("discountType")} className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="percent">Percentage</SelectItem>
+                        <SelectItem value="amount">Amount in {currency}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field
+                    id={fid("discount")}
+                    label={values.discountType === "amount" ? `Discount (${currency})` : "Discount (%)"}
+                    error={errors.discount}
+                  >
+                    <Input inputMode="decimal" autoComplete="off" {...bind("discount")} />
+                  </Field>
+                </div>
+              ) : null}
+              <div className="flex items-center gap-3">
+                <Switch
                   id={fid("taxEnabled")}
                   checked={values.taxEnabled}
                   onCheckedChange={(checked) => set("taxEnabled", checked)}
@@ -328,6 +373,14 @@ export function InvoiceForm({ invoiceId, initial, clients, taxLabel, status }: I
               <dl className="grid grid-cols-2 gap-y-2 tabular-nums">
                 <dt className="text-muted-foreground">Subtotal</dt>
                 <dd className="text-right">{money(totals?.subtotal)}</dd>
+                {values.discountEnabled ? (
+                  <>
+                    <dt className="text-muted-foreground">
+                      Discount{values.discountType === "amount" ? "" : ` ${values.discount}%`}
+                    </dt>
+                    <dd className="text-right">{totals ? `−${money(totals.discountAmount)}` : "—"}</dd>
+                  </>
+                ) : null}
                 {values.taxEnabled ? (
                   <>
                     <dt className="text-muted-foreground">

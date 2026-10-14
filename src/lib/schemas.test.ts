@@ -30,6 +30,9 @@ function values(overrides: Partial<InvoiceFormValues> = {}): InvoiceFormValues {
     currency: "IDR",
     taxEnabled: false,
     taxRate: "11",
+    discountEnabled: false,
+    discountType: "percent",
+    discount: "",
     notes: "",
     items: [{ description: "Logo design", qty: "2", unitPrice: "1500000", notes: "" }],
     ...overrides,
@@ -54,6 +57,8 @@ test("a valid form becomes repository input in the smallest unit", () => {
     dueDate: "2026-10-26",
     currency: "IDR",
     taxRateBp: 1150,
+    discountType: "percent",
+    discountValue: 0,
     notes: "",
     items: [{ description: "Logo design", qty: 2, unitPrice: 1_500_000, notes: "" }],
   });
@@ -69,6 +74,28 @@ test("tax switched off stores zero whatever the rate field holds", () => {
   const parsed = parseInvoiceForm(values({ taxEnabled: false, taxRate: "not a number" }));
   assert.ok(parsed.ok);
   assert.equal(parsed.data.taxRateBp, 0);
+});
+
+test("a discount is stored as basis points or in the smallest unit, and only when switched on", () => {
+  const percent = parseInvoiceForm(values({ discountEnabled: true, discount: "12.5" }));
+  assert.ok(percent.ok);
+  assert.equal(percent.data.discountValue, 1250);
+  const amount = parseInvoiceForm(values({ currency: "USD", discountEnabled: true, discountType: "amount", discount: "10.50",
+    items: [{ description: "x", qty: "1", unitPrice: "100", notes: "" }] }));
+  assert.ok(amount.ok);
+  assert.equal(amount.data.discountType, "amount");
+  assert.equal(amount.data.discountValue, 1050);
+  const off = parseInvoiceForm(values({ discountEnabled: false, discount: "not a number" }));
+  assert.ok(off.ok);
+  assert.equal(off.data.discountValue, 0);
+});
+
+test("a discount must be a valid rate, and an amount no more than the subtotal", () => {
+  assert.ok(errorsOf(values({ discountEnabled: true, discount: "101" })).discount);
+  assert.ok(errorsOf(values({ discountEnabled: true, discountType: "amount", discount: "1.5" })).discount); // rupiah fraction
+  assert.ok(errorsOf(values({ discountEnabled: true, discountType: "amount", discount: "3000001" })).discount); // subtotal 3,000,000
+  assert.ok(parseInvoiceForm(values({ discountEnabled: true, discountType: "amount", discount: "3000000" })).ok);
+  assert.ok(errorsOf(values({ discountType: "bogus" })).discountType);
 });
 
 test("errors are keyed by field", () => {
@@ -127,6 +154,7 @@ test("blank values come from settings", () => {
   assert.equal(blank.currency, "IDR");
   assert.equal(blank.taxEnabled, false);
   assert.equal(blank.taxRate, "11");
+  assert.equal(blank.discountEnabled, false);
   assert.equal(blank.notes, "Thank you.");
   assert.equal(blank.items.length, 1);
 });
@@ -138,8 +166,9 @@ test("a stored invoice survives the trip through the form unchanged", () => {
     status: "sent",
     paidAt: null,
     subtotal: 2998,
-    taxAmount: 330,
-    total: 3328,
+    discountAmount: 300,
+    taxAmount: 297,
+    total: 2995,
     clientId: 3,
     billToName: "Jane",
     billToCompany: "Acme",
@@ -148,6 +177,8 @@ test("a stored invoice survives the trip through the form unchanged", () => {
     dueDate: "2026-10-26",
     currency: "USD",
     taxRateBp: 1100,
+    discountType: "amount",
+    discountValue: 300,
     notes: "Net 14",
     items: [{ description: "Hours", qty: 2, unitPrice: 1499, notes: "Oct" }],
   };
@@ -162,6 +193,8 @@ test("a stored invoice survives the trip through the form unchanged", () => {
     dueDate: "2026-10-26",
     currency: "USD",
     taxRateBp: 1100,
+    discountType: "amount",
+    discountValue: 300,
     notes: "Net 14",
     items: [{ description: "Hours", qty: 2, unitPrice: 1499, notes: "Oct" }],
   });

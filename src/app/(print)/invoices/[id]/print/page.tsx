@@ -118,6 +118,15 @@ export default async function PrintPage({ params, searchParams }: Props) {
                         <th scope="row">Subtotal</th>
                         <td>{money(invoice.subtotal)}</td>
                       </tr>
+                      {invoice.discountAmount > 0 ? (
+                        <tr>
+                          <th scope="row">
+                            Discount
+                            {invoice.discountType === "percent" ? ` ${percentToInput(invoice.discountValue)}%` : null}
+                          </th>
+                          <td>−{money(invoice.discountAmount)}</td>
+                        </tr>
+                      ) : null}
                       {invoice.taxRateBp > 0 ? (
                         <tr>
                           <th scope="row">
