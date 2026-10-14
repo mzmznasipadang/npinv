@@ -56,18 +56,18 @@ export default async function DashboardPage() {
                 <Tile
                   label="Outstanding"
                   value={formatMoney(summary.outstanding, summary.currency)}
-                  hint="Sent and not yet paid"
+                  hint="Balance still owed on sent invoices"
                 />
                 <Tile
                   label="Overdue"
                   value={formatMoney(summary.overdue, summary.currency)}
-                  hint="Sent and past the due date"
+                  hint="Balance owed past the due date"
                   alert={summary.overdue > 0}
                 />
                 <Tile
                   label="Paid this month"
                   value={formatMoney(summary.paidThisMonth, summary.currency)}
-                  hint="By payment date"
+                  hint="Payments received, by payment date"
                 />
               </div>
             </section>

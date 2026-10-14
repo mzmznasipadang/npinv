@@ -34,7 +34,14 @@ export function InvoiceTable({ rows }: { rows: InvoiceRow[] }) {
             </TableCell>
             <TableCell>{formatDate(row.issueDate)}</TableCell>
             <TableCell>{formatDate(row.dueDate)}</TableCell>
-            <TableCell className="text-right tabular-nums">{formatMoney(row.total, row.currency)}</TableCell>
+            <TableCell className="text-right tabular-nums">
+              {formatMoney(row.total, row.currency)}
+              {row.status === "sent" && row.paid > 0 ? (
+                <span className="block text-xs text-muted-foreground">
+                  Balance {formatMoney(row.balance, row.currency)}
+                </span>
+              ) : null}
+            </TableCell>
             <TableCell>
               <StatusBadge status={row.display} />
             </TableCell>
