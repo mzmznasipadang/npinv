@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
-import { formatMoney, lineTotal, percentToInput } from "@/lib/money";
+import { downPaymentAmount, formatMoney, lineTotal, percentToInput } from "@/lib/money";
 import { getInvoice, getSettings } from "@/lib/repo";
 import type { Invoice } from "@/lib/repo";
-import { formatDate } from "@/lib/rules";
+import { formatDate, printVersions } from "@/lib/rules";
+import type { PrintVersion } from "@/lib/rules";
 import { PrintToolbar } from "./print-toolbar";
 import "./print.css";
 
@@ -21,6 +22,12 @@ function titleOf(invoice: Invoice): string {
   return `${invoice.number ?? "DRAFT"} – ${invoice.billToName}`;
 }
 
+const LABELS: Record<PrintVersion, string> = {
+  full: "Full invoice",
+  payments: "With payments",
+  dp: "Down payment request",
+};
+
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   await connection();
   const invoice = load((await params).id);
@@ -32,7 +39,13 @@ export default async function PrintPage({ params, searchParams }: Props) {
   const invoice = load((await params).id);
   if (!invoice) notFound();
   const settings = getSettings();
-  const auto = (await searchParams).print === "1";
+  const query = await searchParams;
+  const auto = query.print === "1";
+  const { versions, version } = printVersions(invoice.payments.length > 0, invoice.downPaymentValue > 0, query.version);
+  const downPayment =
+    version === "dp"
+      ? downPaymentAmount(invoice.total, { type: invoice.downPaymentType, value: invoice.downPaymentValue })
+      : 0;
   const money = (minor: number) => formatMoney(minor, invoice.currency);
   const contact = [settings.businessName, settings.businessAddress, settings.businessEmail, settings.businessPhone]
     .map((part) => part.replace(/\s*\n\s*/g, ", ").trim())
@@ -41,7 +54,16 @@ export default async function PrintPage({ params, searchParams }: Props) {
 
   return (
     <div className="print-root">
-      <PrintToolbar auto={auto} backHref={`/invoices/${invoice.id}`} title={titleOf(invoice)} />
+      <PrintToolbar
+        auto={auto}
+        backHref={`/invoices/${invoice.id}`}
+        title={titleOf(invoice)}
+        versions={versions.map((option) => ({
+          label: LABELS[option],
+          href: `/invoices/${invoice.id}/print?version=${option}`,
+          current: option === version,
+        }))}
+      />
       <div className="scroller">
         <div className="sheet">
           <div className="super" aria-hidden="true">
@@ -139,6 +161,33 @@ export default async function PrintPage({ params, searchParams }: Props) {
                         <th scope="row">Total</th>
                         <td>{money(invoice.total)}</td>
                       </tr>
+                      {version === "payments" ? (
+                        <>
+                          {invoice.payments.map((payment) => (
+                            <tr key={payment.id}>
+                              <th scope="row">
+                                {payment.kind === "write_off" ? "Written off" : "Paid"} {formatDate(payment.paidOn)}
+                              </th>
+                              <td>−{money(payment.amount)}</td>
+                            </tr>
+                          ))}
+                          <tr className="grand">
+                            <th scope="row">Balance due</th>
+                            <td>{money(invoice.balance)}</td>
+                          </tr>
+                        </>
+                      ) : null}
+                      {version === "dp" ? (
+                        <tr className="grand">
+                          <th scope="row">
+                            Down payment due
+                            {invoice.downPaymentType === "percent"
+                              ? ` (${percentToInput(invoice.downPaymentValue)}%)`
+                              : null}
+                          </th>
+                          <td>{money(downPayment)}</td>
+                        </tr>
+                      ) : null}
                     </tbody>
                   </table>
 

@@ -20,6 +20,7 @@
 /* Screen-only controls */
 .print-root .toolbar {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 12px;
   margin-bottom: 16px;
@@ -41,6 +42,16 @@
   color: #fff;
   background: var(--navy);
   border: 1px solid var(--navy);
+}
+.print-root .toolbar .versions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.print-root .toolbar a[aria-current="page"] {
+  color: #fff;
+  background: var(--navy);
+  border-color: var(--navy);
 }
 .print-root .toolbar :focus-visible {
   outline: 3px solid var(--sky);
