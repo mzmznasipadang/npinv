@@ -8,6 +8,8 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+ARG NPINV_ALLOWED_ORIGINS=
+ENV NPINV_ALLOWED_ORIGINS=$NPINV_ALLOWED_ORIGINS
 RUN npm run build
 
 FROM node:24.21.0-slim AS run

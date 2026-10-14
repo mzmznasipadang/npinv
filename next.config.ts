@@ -6,8 +6,12 @@ const nextConfig: NextConfig = {
   output: "standalone",
   experimental: {
     serverActions: {
-      // The address the app is opened at through `tailscale serve`.
-      allowedOrigins: ["naspad-server.taild39e93.ts.net:8445"],
+      // Extra hosts the app is opened at (e.g. through `tailscale serve`), comma-separated.
+      // Set at build time; see deploy/compose.yaml.
+      allowedOrigins: (process.env.NPINV_ALLOWED_ORIGINS ?? "")
+        .split(",")
+        .map((origin) => origin.trim())
+        .filter(Boolean),
     },
   },
   turbopack: {

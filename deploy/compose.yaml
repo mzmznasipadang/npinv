@@ -3,7 +3,11 @@ name: npinv
 
 services:
   npinv:
-    build: ./src
+    build:
+      context: ./src
+      args:
+        # Set in /srv/npinv/.env, e.g. NPINV_ALLOWED_ORIGINS=<host>.<tailnet>.ts.net:8445
+        NPINV_ALLOWED_ORIGINS: ${NPINV_ALLOWED_ORIGINS:-}
     image: npinv:latest
     container_name: npinv
     restart: unless-stopped

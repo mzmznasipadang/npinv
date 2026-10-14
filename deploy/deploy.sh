@@ -3,7 +3,9 @@
 # The Mac must be on the personal tailnet. Uncommitted changes are not deployed.
 set -euo pipefail
 
-HOST="${NPINV_HOST:-root@100.99.222.72}"
+# Local-only settings live in deploy/.env.local (gitignored): NPINV_HOST=root@<server-address>
+[ -f "$(dirname "$0")/.env.local" ] && . "$(dirname "$0")/.env.local"
+HOST="${NPINV_HOST:?Set NPINV_HOST, e.g. in deploy/.env.local}"
 cd "$(git rev-parse --show-toplevel)"
 
 if [ -n "$(git status --porcelain)" ]; then

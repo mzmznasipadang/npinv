@@ -12,7 +12,7 @@ A private web app for Naspad Studio to create invoices, export them as branded P
 - An invoice can be created, edited, marked sent, marked paid, duplicated and saved as a PDF that follows the brand's Billing Statement layout.
 - The dashboard shows outstanding, overdue and paid-this-month totals per currency.
 - The UI uses shadcn/ui with working light and dark modes in the Naspad palette and Montserrat.
-- The app runs on naspad-server at `https://naspad-server.taild39e93.ts.net:8445`, tailnet-only, and survives a reboot.
+- The app runs on naspad-server at `https://naspad-server.<tailnet>.ts.net:8445`, tailnet-only, and survives a reboot.
 - The code is in a private Gitea repo, `mzmznasipadang/npinv`.
 
 ## 2. Decisions already made
@@ -193,7 +193,7 @@ Follows the existing pattern in `naspad-server.md`.
 | Container | `npinv`, built from the repo's Dockerfile, runs as uid 1000, `restart: unless-stopped`, 512 MB memory limit |
 | Port | `127.0.0.1:3003` → container port 3000 |
 | Exposure | `tailscale serve --bg --https=8445 http://127.0.0.1:3003` — tailnet-only |
-| URL | `https://naspad-server.taild39e93.ts.net:8445` |
+| URL | `https://naspad-server.<tailnet>.ts.net:8445` |
 
 - Nothing is added under the `:443` listener, which is public through Funnel.
 - **Deploy script (`deploy/deploy.sh`, run on the Mac):** sends the committed code (`git archive HEAD`) over SSH into a freshly emptied `/srv/npinv/src`, copies `deploy/compose.yaml` to `/srv/npinv/compose.yaml`, and runs `docker compose up -d --build` there. Uncommitted changes are never deployed.
@@ -218,7 +218,7 @@ Server changes this makes:
 ## 10. Repository
 
 - Local repo on branch `main`, with a repo-local git identity: the Gitea username and the Gitea account's email (not the work identity).
-- Remote: `https://naspad-server.taild39e93.ts.net/mzmznasipadang/npinv.git`, private, created empty (no README or licence) by Victor.
+- Remote: `https://naspad-server.<tailnet>.ts.net/mzmznasipadang/npinv.git`, private, created empty (no README or licence) by Victor.
 - First push is run by Victor in a terminal; the access token is stored by the macOS keychain helper.
 - Ignored: `node_modules`, `.next`, `data/`, `.env*`.
 - No CI in v1.

@@ -3,7 +3,7 @@
 Invoice dashboard for Naspad Studio: create invoices, save them as branded A4 PDFs, and track what is outstanding, overdue and paid.
 
 - Design: `docs/superpowers/specs/2026-10-12-npinv-design.md`
-- Live (tailnet only): https://naspad-server.taild39e93.ts.net:8445
+- Live (tailnet only): https://naspad-server.<tailnet>.ts.net:8445
 
 ## Develop
 
@@ -24,7 +24,14 @@ npm run build && npm run lint
 
 ## Deploy
 
-Commit first; only committed code is deployed. With the Mac on the personal tailnet:
+Commit first; only committed code is deployed. With the Mac on the personal tailnet, put the
+server address in `deploy/.env.local` (gitignored, never committed):
+
+```bash
+NPINV_HOST=root@<server-tailscale-ip>
+```
+
+Then:
 
 ```bash
 ./deploy/deploy.sh
