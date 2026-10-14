@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import type { Currency } from "./money";
 import * as repo from "./repo";
 import { today } from "./rules";
 import { parseClientForm, parseInvoiceForm, parseInvoiceNumber, parsePaymentForm, parseSettingsForm } from "./schemas";
@@ -70,13 +71,20 @@ export async function markSentAction(id: number, number: string): Promise<FormSt
   return { ok: true };
 }
 
-export async function recordPaymentAction(id: number, values: PaymentFormValues): Promise<FormState> {
+/** `shown` is the currency and balance the dialog displayed; the payment is refused if either has since changed. */
+export async function recordPaymentAction(
+  id: number,
+  shown: { currency: Currency; balance: number },
+  values: PaymentFormValues,
+): Promise<FormState> {
   if (!isId(id)) return { message: GONE };
-  const invoice = repo.getInvoice(id);
-  if (!invoice) return { message: GONE };
-  const parsed = parsePaymentForm(values, invoice.currency);
+  const currency = shown?.currency;
+  if ((currency !== "IDR" && currency !== "USD") || !Number.isSafeInteger(shown.balance)) {
+    return { message: "Reload the page and try again." };
+  }
+  const parsed = parsePaymentForm(values, currency);
   if (!parsed.ok) return { errors: parsed.errors };
-  const result = repo.recordPayment(id, invoice.currency, parsed.data);
+  const result = repo.recordPayment(id, currency, parsed.data, shown.balance);
   if (!result.ok) return { message: result.error };
   refresh();
   return { ok: true };

@@ -348,8 +348,11 @@ export function markSent(id: number, number: string): Result {
   });
 }
 
-/** Records a payment on a sent invoice whose currency is `currency`. Refuses an amount above the balance. */
-export function recordPayment(id: number, currency: Currency, input: PaymentInput): Result {
+/**
+ * Records a payment on a sent invoice whose currency is `currency`. Refuses an amount above the balance, and,
+ * when `shownBalance` is given, a balance that has changed since it was shown to the person paying.
+ */
+export function recordPayment(id: number, currency: Currency, input: PaymentInput, shownBalance?: number): Result {
   return transaction((): Result => {
     const invoice = one<{ status: Status; currency: Currency; balance: number; writeOffs: number }>(
       `SELECT status, currency, total - ${SETTLED} AS balance,
@@ -359,8 +362,9 @@ export function recordPayment(id: number, currency: Currency, input: PaymentInpu
     );
     if (!invoice) return { ok: false, error: "This invoice no longer exists." };
     if (invoice.status !== "sent") return { ok: false, error: "Payments can only be recorded on a sent invoice." };
-    // The amount was read in this currency; after a change it would mean something else.
-    if (invoice.currency !== currency) {
+    // The amount was read in this currency, and any write-off worked out from the shown balance;
+    // after a change in another tab either would mean something else.
+    if (invoice.currency !== currency || (shownBalance !== undefined && shownBalance !== invoice.balance)) {
       return { ok: false, error: "The invoice changed while this was open. Reload and try again." };
     }
     if (input.amount > invoice.balance) {

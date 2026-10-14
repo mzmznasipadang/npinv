@@ -232,6 +232,17 @@ test("a payment above the balance, on a draft or paid invoice, or in another cur
   assert.equal(invoice(id).payments.length, 1);
 });
 
+test("a payment against a balance or currency that changed since it was shown is refused", () => {
+  const id = sentInvoice();
+  repo.recordPayment(id, "IDR", pay(2_000_000));
+  const shown = invoice(id).balance; // a first tab shows 1,000,000 owed
+  repo.removePayment(id, invoice(id).payments[0].id); // a second tab removes the payment: 3,000,000 owed
+  assert.equal(repo.recordPayment(id, "IDR", { ...pay(990_000), writeOff: true }, shown).ok, false);
+  assert.equal(repo.recordPayment(id, "USD", pay(100), invoice(id).balance).ok, false);
+  assert.equal(invoice(id).payments.length, 0);
+  assert.deepEqual(repo.recordPayment(id, "IDR", pay(100), invoice(id).balance), { ok: true });
+});
+
 test("a short payment can write off the rest, which closes the invoice", () => {
   const id = sentInvoice();
   assert.deepEqual(repo.recordPayment(id, "IDR", { ...pay(2_999_000), writeOff: true }), { ok: true });

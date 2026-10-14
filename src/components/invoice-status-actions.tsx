@@ -204,7 +204,8 @@ function RecordPaymentDialog({ id, balance, currency, today, disabled }: RecordP
   }
 
   const form = useServerForm(initial, async (values) => {
-    const result = await recordPaymentAction(id, { ...values, writeOff: values.writeOff && leftOver(values) > 0 });
+    const writeOff = values.writeOff && leftOver(values) > 0;
+    const result = await recordPaymentAction(id, { currency, balance }, { ...values, writeOff });
     if (result?.ok) {
       setOpen(false);
       toast.success("Payment recorded");
