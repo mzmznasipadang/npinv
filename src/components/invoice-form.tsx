@@ -18,7 +18,7 @@ import { useServerForm } from "@/hooks/use-actions";
 import { saveInvoiceAction } from "@/lib/actions";
 import { blankItem } from "@/lib/invoice-form";
 import { formatMoney, invoiceTotals, parseAmount, parsePercent } from "@/lib/money";
-import type { Currency, Discount, Line, Totals } from "@/lib/money";
+import type { Currency, Line, Portion, Totals } from "@/lib/money";
 import type { Client } from "@/lib/repo";
 import type { InvoiceFormValues, ItemFormValues } from "@/lib/schemas";
 
@@ -56,7 +56,7 @@ function liveTotals(values: InvoiceFormValues, currency: Currency): Totals | nul
   }
   const taxRateBp = values.taxEnabled ? parsePercent(values.taxRate) : 0;
   if (taxRateBp === null) return null;
-  const type: Discount["type"] = values.discountType === "amount" ? "amount" : "percent";
+  const type: Portion["type"] = values.discountType === "amount" ? "amount" : "percent";
   const discount = !values.discountEnabled
     ? 0
     : type === "amount"

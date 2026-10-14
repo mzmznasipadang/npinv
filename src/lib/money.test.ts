@@ -1,6 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { amountToInput, formatMoney, invoiceTotals, lineTotal, parseAmount, parsePercent, percentToInput } from "./money.ts";
+import {
+  amountToInput,
+  downPaymentAmount,
+  formatMoney,
+  invoiceTotals,
+  lineTotal,
+  parseAmount,
+  parsePercent,
+  percentToInput,
+} from "./money.ts";
 
 test("line total is quantity times unit price", () => {
   assert.equal(lineTotal({ qty: 3, unitPrice: 250_000 }), 750_000);
@@ -131,4 +140,17 @@ test("a total above ten trillion smallest units is refused", () => {
 test("large dollar amounts keep their exact cents", () => {
   assert.equal(formatMoney(8_999_999_999_999_991, "USD"), "$89,999,999,999,999.91");
   assert.equal(formatMoney(10_000_000_000_000, "USD"), "$100,000,000,000.00");
+});
+
+test("a down payment is a share of the total rounded half up, or a fixed amount", () => {
+  assert.equal(downPaymentAmount(1_110_000, { type: "percent", value: 5000 }), 555_000);
+  assert.equal(downPaymentAmount(101, { type: "percent", value: 5000 }), 51); // 50.5 -> 51
+  assert.equal(downPaymentAmount(100, { type: "percent", value: 3333 }), 33); // 33.33 -> 33
+  assert.equal(downPaymentAmount(1_110_000, { type: "percent", value: 10000 }), 1_110_000);
+  assert.equal(downPaymentAmount(1_110_000, { type: "amount", value: 500_000 }), 500_000);
+});
+
+test("a fixed down payment above the total throws RangeError", () => {
+  assert.equal(downPaymentAmount(100, { type: "amount", value: 100 }), 100);
+  assert.throws(() => downPaymentAmount(100, { type: "amount", value: 101 }), RangeError);
 });

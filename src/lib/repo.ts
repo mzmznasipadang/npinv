@@ -1,6 +1,6 @@
 import { getDb, transaction } from "./db.ts";
 import { invoiceTotals } from "./money.ts";
-import type { Currency, Discount } from "./money.ts";
+import type { Currency, Portion } from "./money.ts";
 import { addDays, displayStatus, formatNumber, nextSequence } from "./rules.ts";
 import type { DisplayStatus, Status } from "./rules.ts";
 
@@ -32,7 +32,7 @@ export type InvoiceInput = {
   dueDate: string;
   currency: Currency;
   taxRateBp: number;
-  discountType: Discount["type"];
+  discountType: Portion["type"];
   /** Basis points for a percentage, the smallest unit for an amount. Zero means no discount. */
   discountValue: number;
   notes: string;
