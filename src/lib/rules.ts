@@ -1,5 +1,6 @@
 export type Status = "draft" | "sent" | "paid";
-export type DisplayStatus = Status | "overdue";
+export type DisplayStatus = Status | "overdue" | "partial";
+export type PrintVersion = "full" | "payments" | "dp";
 
 const TIME_ZONE = "Asia/Jakarta";
 
@@ -35,9 +36,30 @@ export function formatDate(date: string): string {
   }).format(new Date(`${date}T00:00:00Z`));
 }
 
-/** Overdue means sent and due before today. Due today is not overdue. */
-export function displayStatus(status: Status, dueDate: string, todayDate: string): DisplayStatus {
-  return status === "sent" && dueDate < todayDate ? "overdue" : status;
+/**
+ * Overdue means sent and due before today; due today is not overdue. Otherwise a sent
+ * invoice with money already received (`paid`, in the smallest unit) is part paid.
+ */
+export function displayStatus(status: Status, dueDate: string, todayDate: string, paid = 0): DisplayStatus {
+  if (status !== "sent") return status;
+  if (dueDate < todayDate) return "overdue";
+  return paid > 0 ? "partial" : "sent";
+}
+
+/**
+ * The print versions an invoice has, in toolbar order, and the one to show: `asked` when it is one
+ * of them, otherwise With payments, then the Down payment request, then the Full invoice.
+ */
+export function printVersions(
+  hasPayments: boolean,
+  hasDownPayment: boolean,
+  asked: unknown,
+): { versions: PrintVersion[]; version: PrintVersion } {
+  const versions: PrintVersion[] = ["full"];
+  if (hasPayments) versions.push("payments");
+  if (hasDownPayment) versions.push("dp");
+  const fallback: PrintVersion = hasPayments ? "payments" : hasDownPayment ? "dp" : "full";
+  return { versions, version: versions.find((version) => version === asked) ?? fallback };
 }
 
 export function formatNumber(prefix: string, year: string, seq: number): string {

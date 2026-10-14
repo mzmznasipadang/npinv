@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addDays, displayStatus, formatDate, formatNumber, isValidDate, nextSequence, today } from "./rules.ts";
+import { addDays, displayStatus, formatDate, formatNumber, isValidDate, nextSequence, printVersions, today } from "./rules.ts";
 
 test("today is the date in Jakarta, not UTC", () => {
   assert.equal(today(new Date("2026-10-12T16:59:59Z")), "2026-10-12");
@@ -62,4 +62,27 @@ test("sequences above 999 compare as numbers, not text", () => {
 
 test("numbers in another format are ignored", () => {
   assert.equal(nextSequence(["INV-2026-abc", "ABC-2026-005", "INV-2026-", "custom"], "INV", "2026"), 1);
+});
+
+test("a sent invoice with money received is part paid, unless it is overdue", () => {
+  assert.equal(displayStatus("sent", "2026-10-13", "2026-10-12", 500), "partial");
+  assert.equal(displayStatus("sent", "2026-10-12", "2026-10-12", 500), "partial"); // due today
+  assert.equal(displayStatus("sent", "2026-10-11", "2026-10-12", 500), "overdue");
+  assert.equal(displayStatus("sent", "2026-10-13", "2026-10-12", 0), "sent");
+  assert.equal(displayStatus("paid", "2026-10-13", "2026-10-12", 500), "paid");
+});
+
+test("the print version falls back to payments, then the down payment request, then the full invoice", () => {
+  assert.deepEqual(printVersions(false, false, undefined), { versions: ["full"], version: "full" });
+  assert.deepEqual(printVersions(true, true, undefined), { versions: ["full", "payments", "dp"], version: "payments" });
+  assert.deepEqual(printVersions(false, true, undefined), { versions: ["full", "dp"], version: "dp" });
+  assert.deepEqual(printVersions(true, false, "full"), { versions: ["full", "payments"], version: "full" });
+  assert.deepEqual(printVersions(true, true, "dp"), { versions: ["full", "payments", "dp"], version: "dp" });
+});
+
+test("a print version that is unknown, repeated or not available falls back", () => {
+  assert.equal(printVersions(false, true, "bogus").version, "dp");
+  assert.equal(printVersions(false, true, "payments").version, "dp"); // no payments yet
+  assert.equal(printVersions(true, false, ["full", "payments"]).version, "payments"); // ?version=a&version=b
+  assert.equal(printVersions(false, false, "dp").version, "full");
 });
