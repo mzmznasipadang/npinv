@@ -82,3 +82,35 @@ docker compose up -d
 
 No database restore is needed, because this release changed no data. Older app builds
 ignore `printVersions`, and the new build hides the PDF control when it's missing.
+
+## Follow-up: Cloudflare email fix — release `printfix-20261015T151731Z-22077b1`
+
+In the app's PDF, the contact email showed as "[email protected]". Cloudflare's email
+obfuscation rewrote the address as the print document passed through it, and the
+document runs no scripts to restore it. Commit `22077b1` adds `no-transform` to the
+print response's `Cache-Control`.
+
+- Image: `npinv:printfix-20261015T151731Z-22077b1` = `npinv:latest`, ID
+  `sha256:d8978ca4668c…`.
+- Rollback image: `npinv:before-printfix-20261015T151731Z-22077b1` (the PDF release above).
+- Backups: in `/srv/npinv/backups/printfix-20261015T151731Z-22077b1/`. The `before.db`
+  integrity check returned `ok`, and it holds 3 invoices.
+- The procedure was the same as above. The Turbopack build passed, and the smoke-test
+  container passed.
+- Live checks:
+  - zero restarts and a clean log;
+  - `/login` returns 200, and the web print page redirects to login when signed out;
+  - the API print route returns a JSON 401 when signed out;
+  - the live bundle contains `no-store, no-transform`;
+  - public `/login` returns 200.
+- In the iOS app, signed in by the user, a fresh PDF of a live draft invoice now shows
+  the real contact email.
+
+Rollback:
+
+```bash
+cd /srv/npinv
+docker tag npinv:before-printfix-20261015T151731Z-22077b1 npinv:latest
+rm -rf src && cp -a releases/printfix-20261015T151731Z-22077b1/source-before src
+docker compose up -d
+```

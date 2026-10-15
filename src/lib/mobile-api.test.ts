@@ -121,7 +121,7 @@ test('the print endpoint returns the escaped, self-contained invoice document fo
   const response = await raw(`invoices/${id}/print`);
   assert.equal(response.status,200);
   assert.equal(response.headers.get('content-type'),'text/html; charset=utf-8');
-  assert.equal(response.headers.get('cache-control'),'private, no-store');
+  assert.equal(response.headers.get('cache-control'),'private, no-store, no-transform');
   assert.equal(response.headers.get('x-content-type-options'),'nosniff');
   assert.equal(response.headers.get('content-security-policy'),"default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'");
   const body = await response.text();

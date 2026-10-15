@@ -40,8 +40,10 @@ function json(data:unknown,status=200) {
 }
 // The app renders this document offline, so it may load nothing: images and fonts arrive inline and scripts never run.
 const PRINT_CSP="default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'";
+// no-transform keeps proxies from rewriting the document: Cloudflare's email obfuscation swaps addresses for
+// "[email protected]" and relies on a script to restore them, and this document never runs scripts.
 function html(body:string) {
-  return new Response(body,{headers:{'content-type':'text/html; charset=utf-8','cache-control':'private, no-store','x-content-type-options':'nosniff','content-security-policy':PRINT_CSP}});
+  return new Response(body,{headers:{'content-type':'text/html; charset=utf-8','cache-control':'private, no-store, no-transform','x-content-type-options':'nosniff','content-security-policy':PRINT_CSP}});
 }
 // /public is behind the web login, so the document carries its images and fonts as data URIs. Read once, retried after a failure.
 let printAssets:Promise<{images:PrintImages;fonts:PrintFonts}>|undefined;
