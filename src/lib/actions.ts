@@ -9,6 +9,14 @@ import { parseClientForm, parseInvoiceForm, parseInvoiceNumber, parsePaymentForm
 import type { ClientFormValues, FormState, InvoiceFormValues, PaymentFormValues, SettingsFormValues } from "./schemas";
 
 import { requireSession } from "./session";
+import { revokeDeviceSession } from "./mobile-sessions";
+
+export async function revokeDeviceSessionAction(id: number): Promise<FormState> {
+  await requireSession();
+  if (!isId(id) || !revokeDeviceSession(id)) return { message: "This device session is no longer active." };
+  revalidatePath("/settings");
+  return { ok: true };
+}
 
 const GONE = "This invoice no longer exists.";
 

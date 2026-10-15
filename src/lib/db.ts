@@ -125,7 +125,18 @@ CREATE INDEX invoices_client ON invoices(client_id);
 `;
 
 // Step i takes the database from version i to version i + 1.
-const STEPS = [SCHEMA, DISCOUNT, PAYMENTS, PROJECTS];
+const DEVICE_SESSIONS = `
+CREATE TABLE device_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_hash TEXT NOT NULL UNIQUE,
+  credential_binding TEXT NOT NULL,
+  device_name TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  revoked_at INTEGER
+);
+`;
+const STEPS = [SCHEMA, DISCOUNT, PAYMENTS, PROJECTS, DEVICE_SESSIONS];
 
 /** Brings the database up to `target`, the latest version by default. */
 export function migrate(db: DatabaseSync, target = STEPS.length): void {

@@ -435,10 +435,54 @@ test("the dashboard counts balances owed and money received this month, per curr
 
   const { summaries, latest } = repo.dashboard(TODAY);
   assert.deepEqual(summaries, [
-    { currency: "IDR", outstanding: 2_500_000, overdue: 2_000_000, paidThisMonth: 1_150_000 },
-    { currency: "USD", outstanding: 15_000, overdue: 0, paidThisMonth: 0 },
+    {
+      currency: "IDR", outstanding: 2_500_000, overdue: 2_000_000, paidThisMonth: 1_150_000,
+      aging: { notDue: 500_000, days1To30: 2_000_000, days31To60: 0, over60: 0 },
+    },
+    {
+      currency: "USD", outstanding: 15_000, overdue: 0, paidThisMonth: 0,
+      aging: { notDue: 15_000, days1To30: 0, days31To60: 0, over60: 0 },
+    },
   ]);
   assert.equal(latest.length, 6);
+});
+
+test("the dashboard ages each currency's balance by days past due", () => {
+  // 3,000,000 IDR unless overridden.
+  const owed = (number: string, dueDate: string, overrides: Partial<InvoiceInput> = {}) =>
+    sentInvoice(number, { issueDate: "2026-07-01", dueDate, ...overrides });
+  const dueToday = owed("INV-2026-001", TODAY);
+  repo.recordPayment(dueToday, "IDR", pay(1_000_000)); // part paid, and not yet due: 2,000,000
+  owed("INV-2026-002", "2026-10-11"); // 1 day late
+  const late30 = owed("INV-2026-003", "2026-09-12");
+  repo.recordPayment(late30, "IDR", pay(500_000)); // 30 days late: 2,500,000
+  const late31 = owed("INV-2026-004", "2026-09-11");
+  repo.recordPayment(late31, "IDR", { ...pay(1_000_000), writeOff: true }); // writes off the other 2,000,000
+  const payment = invoice(late31).payments.find((p) => p.kind === "payment");
+  assert.ok(payment);
+  repo.removePayment(late31, payment.id); // 31 days late, only the write-off left: 1,000,000
+  owed("INV-2026-005", "2026-08-13"); // 60 days late
+  owed("INV-2026-006", "2026-08-12"); // 61 days late
+  const settled = owed("INV-2026-007", "2026-08-01");
+  repo.recordPayment(settled, "IDR", { ...pay(1), writeOff: true }); // owes nothing
+  repo.saveInvoice(null, input({ issueDate: "2026-07-01", dueDate: "2026-08-01" })); // a draft counts nowhere
+  const usd = (unitPrice: number) => ({ currency: "USD" as const, items: [{ description: "x", qty: 1, unitPrice, notes: "" }] });
+  const usdLate = owed("INV-2026-008", "2026-07-01", usd(20_000));
+  repo.recordPayment(usdLate, "USD", pay(5_000)); // 103 days late: 15,000
+  owed("INV-2026-009", "2026-11-01", usd(7_500));
+
+  const { summaries } = repo.dashboard(TODAY);
+  assert.deepEqual(summaries.map((s) => [s.currency, s.aging]), [
+    ["IDR", { notDue: 2_000_000, days1To30: 5_500_000, days31To60: 4_000_000, over60: 3_000_000 }],
+    ["USD", { notDue: 7_500, days1To30: 0, days31To60: 0, over60: 15_000 }],
+  ]);
+  for (const { currency, outstanding, overdue, aging } of summaries) {
+    assert.equal(aging.notDue + aging.days1To30 + aging.days31To60 + aging.over60, outstanding, currency);
+    assert.equal(aging.days1To30 + aging.days31To60 + aging.over60, overdue, currency);
+    // Not yet due is what the invoice list, through displayStatus, shows as owed and not overdue.
+    const current = repo.listInvoices({ currency, outstanding: true }, TODAY).filter((row) => row.display !== "overdue");
+    assert.equal(aging.notDue, current.reduce((sum, row) => sum + row.balance, 0), currency);
+  }
 });
 
 test("a currency with no invoices has no summary", () => {
@@ -472,6 +516,7 @@ test("the dashboard does not fail when sent totals add up past what a number can
   const { summaries } = repo.dashboard(TODAY);
   assert.equal(summaries.length, 1);
   assert.equal(summaries[0].outstanding, Number.MAX_SAFE_INTEGER);
+  assert.equal(summaries[0].aging.notDue, Number.MAX_SAFE_INTEGER);
 });
 
 test('invoice project links enforce clients and archived history atomically', async () => {
