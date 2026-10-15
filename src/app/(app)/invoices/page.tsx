@@ -14,7 +14,7 @@ import { parseInvoiceFilter } from '@/lib/project-schemas';
 import { requireSession } from '@/lib/session';
 import { today } from '@/lib/rules';
 const FILTERS = [{value:'all',label:'All'},{value:'draft',label:'Draft'},{value:'sent',label:'Sent'},{value:'overdue',label:'Overdue'},{value:'paid',label:'Paid'}] as const;
-const selectClass = 'h-9 rounded-md border bg-background px-3 text-sm focus-visible:outline-2 focus-visible:outline-ring';
+const selectClass = 'h-9 w-full max-w-full rounded-md border bg-background px-3 text-sm focus-visible:outline-2 focus-visible:outline-ring';
 export default async function InvoicesPage({searchParams}:PageProps<'/invoices'>) {
   await connection(); await requireSession();
   const params = await searchParams;
@@ -35,12 +35,12 @@ export default async function InvoicesPage({searchParams}:PageProps<'/invoices'>
   }
   return <><PageHeader title="Invoices"><Button asChild><Link href="/invoices/new"><Plus />New invoice</Link></Button></PageHeader>
     <nav aria-label="Filter by status" className="mb-4 flex flex-wrap gap-2">{FILTERS.map(f => <Button key={f.value} asChild size="sm" variant={f.value === (filter.status ?? 'all') ? 'default' : 'outline'}><Link href={hrefFor(f.value)} aria-current={f.value === (filter.status ?? 'all') ? 'page' : undefined}>{f.label}</Link></Button>)}</nav>
-    <Form action="/invoices" className="mb-6 flex flex-wrap items-end gap-3">
+    <Form key={JSON.stringify(params)} action="/invoices" className="mb-6 flex flex-wrap items-end gap-3">
       {filter.status && filter.status !== 'all' ? <input type="hidden" name="status" value={filter.status} /> : null}
-      <div className="grid gap-1.5"><Label htmlFor="invoice-search">Search</Label><Input id="invoice-search" type="search" name="q" placeholder="Number or client" defaultValue={filter.q ?? ''} /></div>
-      <div className="grid gap-1.5"><Label htmlFor="invoice-project">Project</Label><select id="invoice-project" name="projectId" defaultValue={filter.projectId ?? ''} className={selectClass}><option value="">All projects</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}{p.archivedAt ? ' (archived)' : ''}</option>)}</select></div>
-      <div className="grid gap-1.5"><Label htmlFor="invoice-client">Client</Label><select id="invoice-client" name="clientId" defaultValue={filter.clientId ?? ''} className={selectClass}><option value="">All clients</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
-      <div className="grid gap-1.5"><Label htmlFor="invoice-currency">Currency</Label><select id="invoice-currency" name="currency" defaultValue={filter.currency ?? ''} className={selectClass}><option value="">All currencies</option><option>IDR</option><option>USD</option></select></div>
+      <div className="grid min-w-0 max-w-full gap-1.5"><Label htmlFor="invoice-search">Search</Label><Input id="invoice-search" type="search" name="q" placeholder="Number or client" defaultValue={filter.q ?? ''} /></div>
+      <div className="grid min-w-0 max-w-full gap-1.5"><Label htmlFor="invoice-project">Project</Label><select id="invoice-project" name="projectId" defaultValue={filter.projectId ?? ''} className={selectClass}><option value="">All projects</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}{p.archivedAt ? ' (archived)' : ''}</option>)}</select></div>
+      <div className="grid min-w-0 max-w-full gap-1.5"><Label htmlFor="invoice-client">Client</Label><select id="invoice-client" name="clientId" defaultValue={filter.clientId ?? ''} className={selectClass}><option value="">All clients</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+      <div className="grid min-w-0 max-w-full gap-1.5"><Label htmlFor="invoice-currency">Currency</Label><select id="invoice-currency" name="currency" defaultValue={filter.currency ?? ''} className={selectClass}><option value="">All currencies</option><option>IDR</option><option>USD</option></select></div>
       <label className="flex h-9 items-center gap-2 text-sm"><input type="checkbox" name="outstanding" value="true" defaultChecked={filter.outstanding} className="size-4 accent-primary" />Outstanding only</label>
       <Button type="submit" variant="outline">Apply filters</Button><Button variant="ghost" asChild><Link href="/invoices">Reset</Link></Button>
     </Form>

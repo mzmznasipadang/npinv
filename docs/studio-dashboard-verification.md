@@ -111,3 +111,28 @@ No live staging destination is configured or deployed. Production backup
 availability, actual public/tailnet routing, infrastructure rollback, and
 Jenkins are unverified and outside this implementation. No production deploy
 has been performed.
+
+## Independent review and corrections
+
+A fresh reviewer independently ran the 114-test suite and reviewed the complete
+change. They found stale visible filter controls after Reset on both list pages,
+and a possible long-name mobile overflow. The filter issue was reproduced before
+fixing: Completed → Apply → Reset showed all project results while Status still
+said Completed; USD → Apply → Reset similarly left Currency showing USD.
+Both filter forms now remount when applied URL parameters change. Browser checks
+confirm Reset and settled back/forward navigation synchronize controls and results.
+
+A disposable 159-character unbroken project/client name reproduced the mobile
+concern: document width was 4,157px on a 390px viewport. This was treated as a
+functional responsive issue, then fixed with heading wrapping, constrained filter
+controls, and shrinkable flex/grid content. The same fixture now measures 390px
+at a 390px viewport; project Select triggers measure 358px with 356px scroll width.
+The fixes passed the full 114-test suite and lint. No review findings are deferred.
+
+Implementation decisions: the sandbox denied writes in the newly created native
+worktree, so implementation used the original checkout on a feature branch;
+`main` was not changed. The unused worktree was archived. Browser/mobile checks
+for intermediate tasks were combined with the complete workflow at the end,
+which could have discovered UI defects later; the final pass covered them. The
+long-name finding was upgraded from minor after its actual viewport impact was
+measured; its shared layout constraints were checked on the inspected pages.

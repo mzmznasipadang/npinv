@@ -6,7 +6,7 @@ type FieldProps = { id: string; label: string; error?: string; className?: strin
 
 export function Field({ id, label, error, className, children }: FieldProps) {
   return (
-    <div className={cn("grid gap-1.5", className)}>
+    <div className={cn("grid min-w-0 gap-1.5", className)}>
       <Label htmlFor={id}>{label}</Label>
       {children}
       {error ? (
