@@ -1,0 +1,66 @@
+import { beforeEach, test } from 'node:test';
+import assert from 'node:assert/strict';
+import { getDb } from './db.ts';
+import { createClient, deleteClient, NotFoundError, ProjectConflictError } from './repo.ts';
+import * as p from './projects.ts';
+const TODAY = '2026-10-15';
+const client = (name = 'Synthetic') => createClient({name, company:'', address:'', email:'', phone:''});
+const input = (clientId: number, overrides: Partial<p.ProjectInput> = {}): p.ProjectInput => ({clientId, name:'Brand design', description:'Notes', status:'planned', startDate:null, deadline:null, ...overrides});
+beforeEach(() => getDb().exec('DELETE FROM invoices; DELETE FROM projects; DELETE FROM clients'));
+
+test('projects and tasks can be edited, ordered and counted without duplicating counts', () => {
+  const id = p.saveProject(null, input(client()));
+  const early = p.saveTask(id, null, {title:'Early', dueDate:'2026-10-14', completed:false});
+  const late = p.saveTask(id, null, {title:'Later', dueDate:'2026-10-18', completed:false});
+  const undated = p.saveTask(id, null, {title:'Undated', dueDate:null, completed:false});
+  const done = p.saveTask(id, null, {title:'Done', dueDate:'2026-10-01', completed:true});
+  assert.deepEqual(p.listTasks(id).map(t => t.id), [early, late, undated, done]);
+  assert.equal(p.getProject(id)?.taskCount, 4);
+  assert.equal(p.getProject(id)?.completedTaskCount, 1);
+  p.saveTask(id, early, {title:'Early revised', dueDate:null, completed:true});
+  assert.equal(p.getProject(id)?.completedTaskCount, 2);
+  assert.equal(p.listTasks(id).find(t => t.id === early)?.title, 'Early revised');
+  assert.equal(p.deleteTask(id, late), true);
+  assert.equal(p.getProject(id)?.taskCount, 3);
+  getDb().prepare("UPDATE projects SET updated_at = '2000-01-01' WHERE id = ?").run(id);
+  p.saveTask(id, undated, {title:'Changed', dueDate:null, completed:false});
+  assert.ok(p.getProject(id)!.updatedAt > '2000-01-01');
+  p.saveProject(id, input(p.getProject(id)!.clientId, {name:'Updated', status:'in_progress', deadline:'2026-10-20'}));
+  assert.equal(p.getProject(id)?.name, 'Updated');
+});
+
+test('task membership and missing records cannot be bypassed', () => {
+  const c = client(); const a = p.saveProject(null, input(c)); const b = p.saveProject(null, input(c));
+  const t = p.saveTask(a, null, {title:'Private to A', dueDate:null, completed:false});
+  assert.throws(() => p.saveTask(b, t, {title:'Wrong', dueDate:null, completed:true}), NotFoundError);
+  assert.equal(p.deleteTask(b, t), false);
+  assert.equal(p.listTasks(a)[0].completed, false);
+  assert.throws(() => p.saveProject(null, input(999)), ProjectConflictError);
+  assert.throws(() => p.saveProject(999, input(c)), NotFoundError);
+  assert.throws(() => p.setProjectArchived(999, true), NotFoundError);
+  assert.throws(() => p.saveTask(999, null, {title:'Missing', dueDate:null, completed:false}), NotFoundError);
+  assert.throws(() => deleteClient(c), ProjectConflictError);
+});
+
+test('search, archive, dates and status filters describe the correct projects', () => {
+  const c = client('Acme Studio');
+  const overdue = p.saveProject(null, input(c, {name:'100%_design', deadline:'2026-10-14', status:'in_progress'}));
+  const today = p.saveProject(null, input(c, {deadline:TODAY}));
+  const week = p.saveProject(null, input(c, {deadline:'2026-10-22'}));
+  const later = p.saveProject(null, input(c, {deadline:'2026-10-23'}));
+  const undated = p.saveProject(null, input(c));
+  const completed = p.saveProject(null, input(c, {deadline:'2026-10-01', status:'completed'}));
+  const archived = p.saveProject(null, input(c, {deadline:'2026-10-01'})); p.setProjectArchived(archived, true);
+  assert.deepEqual(p.listProjects({attention:'overdue'}, TODAY).map(r => r.id), [overdue]);
+  assert.deepEqual(p.listProjects({attention:'upcoming', sort:'deadline'}, TODAY).map(r => r.id), [today, week]);
+  assert.deepEqual(p.listProjects({q:'%_'}, TODAY).map(r => r.id), [overdue]);
+  assert.equal(p.listProjects({q:'Acme'}, TODAY).length, 6);
+  assert.deepEqual(p.listProjects({status:'in_progress'}, TODAY).map(r => r.id), [overdue]);
+  assert.deepEqual(p.listProjects({archived:true}, TODAY).map(r => r.id), [archived]);
+  assert.equal(p.listProjects({clientId:999}, TODAY).length, 0);
+  assert.equal(p.listProjects({sort:'deadline'}, TODAY).at(-1)?.id, undated);
+  getDb().exec("UPDATE projects SET updated_at = '2026-10-15'");
+  assert.deepEqual(p.listProjects({sort:'updated'}, TODAY).map(r => r.id), [completed, undated, later, week, today, overdue]);
+  p.setProjectArchived(archived, false);
+  assert.equal(p.listProjects({}, TODAY).length, 7);
+});

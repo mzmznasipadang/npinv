@@ -84,6 +84,11 @@ export type Result = { ok: true } | { ok: false; error: string };
 
 export class NotFoundError extends Error {}
 
+export class ProjectConflictError extends Error {
+  field: string;
+  constructor(field: string, message: string) { super(message); this.field = field; }
+}
+
 /** An edit that conflicts with recorded payments. `field` is the form field to show the message on. */
 export class PaymentConflictError extends Error {
   field: string;
@@ -156,7 +161,12 @@ export function updateClient(id: number, input: ClientInput): boolean {
 }
 
 export function deleteClient(id: number): boolean {
-  return run("DELETE FROM clients WHERE id = ?", id).changes > 0;
+  return transaction(() => {
+    if (one("SELECT 1 FROM projects WHERE client_id = ? LIMIT 1", id)) {
+      throw new ProjectConflictError("clientId", "This client has projects. Keep the client to preserve their project history.");
+    }
+    return run("DELETE FROM clients WHERE id = ?", id).changes > 0;
+  });
 }
 
 // Invoices
