@@ -39,3 +39,14 @@ export function parseProjectFilter(params: Record<string, string | string[] | un
   }).safeParse(Object.fromEntries(Object.entries(params).filter(([,v]) => v !== '')));
   return parsed(result);
 }
+
+export function parseInvoiceFilter(params: Record<string, string | string[] | undefined>): Parsed<import('./repo.ts').InvoiceFilter> {
+  return parsed(z.object({
+    q:z.string().trim().max(100).optional(),
+    status:z.enum(['all','draft','sent','paid','overdue']).optional(),
+    projectId:z.string().refine(s => parseRecordId(s) !== null, 'Invalid project').transform(Number).optional(),
+    clientId:z.string().refine(s => parseRecordId(s) !== null, 'Invalid client').transform(Number).optional(),
+    currency:z.enum(['IDR','USD']).optional(),
+    outstanding:z.enum(['true','false']).transform(s => s === 'true').optional(),
+  }).safeParse(Object.fromEntries(Object.entries(params).filter(([,v]) => v !== ''))));
+}

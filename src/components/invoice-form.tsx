@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import type { Project } from "@/lib/projects";
 import { useId, useState } from "react";
 import type { ChangeEvent, ReactNode } from "react";
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
@@ -27,6 +29,7 @@ type InvoiceFormProps = {
   invoiceId: number | null;
   initial: InvoiceFormValues;
   clients: Client[];
+  projects: Project[];
   taxLabel: string;
   /** Present for a saved invoice; drives the status bar. */
   status?: Omit<InvoiceStatusProps, "dirty">;
@@ -100,7 +103,7 @@ function ItemCell({ id, error, children }: { id: string; error?: string; childre
   );
 }
 
-export function InvoiceForm({ invoiceId, initial, clients, taxLabel, status, payments }: InvoiceFormProps) {
+export function InvoiceForm({ invoiceId, initial, clients, projects, taxLabel, status, payments }: InvoiceFormProps) {
   const [saved, setSaved] = useState(initial);
   // Next keeps recently visited routes mounted but hidden, so two copies of a form can be
   // in the document at once. Field ids are made unique per form instance.
@@ -135,11 +138,12 @@ export function InvoiceForm({ invoiceId, initial, clients, taxLabel, status, pay
         ? {
             ...current,
             clientId: String(client.id),
+            projectId: projects.find(p => String(p.id) === current.projectId)?.clientId === client.id ? current.projectId : "",
             billToName: client.name,
             billToCompany: client.company,
             billToAddress: client.address,
           }
-        : { ...current, clientId: "" },
+        : { ...current, clientId: "", projectId: "" },
     );
   }
 
@@ -194,6 +198,13 @@ export function InvoiceForm({ invoiceId, initial, clients, taxLabel, status, pay
                     ))}
                   </SelectContent>
                 </Select>
+              </Field>
+              <Field id={fid("projectId")} label="Project (optional)" error={errors.projectId}>
+                <Select value={values.projectId || "none"} onValueChange={value => set("projectId", value === "none" ? "" : value)}>
+                  <SelectTrigger id={fid("projectId")} className="w-full" {...invalid(fid("projectId"),errors.projectId)}><SelectValue placeholder="No project" /></SelectTrigger>
+                  <SelectContent><SelectItem value="none">No project</SelectItem>{projects.filter(p => String(p.clientId) === values.clientId && (!p.archivedAt || String(p.id) === initial.projectId)).map(p => <SelectItem key={p.id} value={String(p.id)}>{p.name}{p.archivedAt ? " (archived)" : ""}</SelectItem>)}</SelectContent>
+                </Select>
+                {values.projectId ? <Link className="text-sm font-semibold underline underline-offset-4" href={`/projects/${values.projectId}`}>View project</Link> : <p className="text-xs text-muted-foreground">Choose a saved client to see their projects.</p>}
               </Field>
               <Field id={fid("billToName")} label="Client name" error={errors.billToName}>
                 <Input autoComplete="off" {...bind("billToName")} />

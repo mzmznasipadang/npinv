@@ -65,6 +65,7 @@ export async function saveInvoiceAction(id: number | null, values: InvoiceFormVa
   } catch (error) {
     if (error instanceof RangeError) return { message: "The invoice total is too large to store." };
     if (error instanceof repo.NotFoundError) return { message: GONE };
+    if (error instanceof repo.ProjectConflictError) return { errors: { [error.field]: error.message } };
     if (error instanceof repo.PaymentConflictError) return { errors: { [error.field]: error.message } };
     throw error;
   }

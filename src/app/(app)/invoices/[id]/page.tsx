@@ -1,3 +1,5 @@
+import { requireSession } from "@/lib/session";
+import { getProject, listProjects } from "@/lib/projects";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { InvoiceForm } from "@/components/invoice-form";
@@ -10,11 +12,15 @@ import { displayStatus, today } from "@/lib/rules";
 
 export default async function InvoicePage({ params }: PageProps<"/invoices/[id]">) {
   await connection();
+  await requireSession();
   const { id } = await params;
   const invoice = /^\d{1,15}$/.test(id) ? getInvoice(Number(id)) : null;
   if (!invoice) notFound();
   const settings = getSettings();
   const todayDate = today();
+  const projects = listProjects({}, todayDate);
+  const linked = invoice.projectId === null ? null : getProject(invoice.projectId);
+  if (linked?.archivedAt) projects.push(linked);
 
   return (
     <>
@@ -26,6 +32,7 @@ export default async function InvoicePage({ params }: PageProps<"/invoices/[id]"
         invoiceId={invoice.id}
         initial={invoiceToValues(invoice, settings)}
         clients={listClients()}
+        projects={projects}
         taxLabel={settings.taxLabel}
         status={{
           id: invoice.id,

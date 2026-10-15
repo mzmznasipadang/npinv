@@ -26,3 +26,9 @@ test('record IDs and filters reject malformed or repeated relationship values', 
   assert.equal(parseProjectFilter({status:['planned']}).ok, false);
   assert.deepEqual(parseProjectFilter({q:' Acme ', status:'in_progress', archived:'true', sort:'deadline', attention:'tasks', clientId:'1'}), {ok:true,data:{q:'Acme', status:'in_progress', archived:true, sort:'deadline', attention:'tasks', clientId:1}});
 });
+
+test('invoice URL filters compose and reject malformed relation IDs', async () => {
+  const {parseInvoiceFilter} = await import('./project-schemas.ts');
+  assert.deepEqual(parseInvoiceFilter({projectId:'7',clientId:'3',currency:'USD',outstanding:'true',status:'overdue',q:' INV '}),{ok:true,data:{projectId:7,clientId:3,currency:'USD',outstanding:true,status:'overdue',q:'INV'}});
+  for (const params of [{projectId:'0'}, {projectId:['1','2']}, {clientId:'bad'}, {currency:'EUR'}, {status:['paid']}, {outstanding:'yes'}]) assert.equal(parseInvoiceFilter(params).ok,false);
+});

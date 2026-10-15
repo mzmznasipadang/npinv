@@ -178,7 +178,7 @@ test("a stored invoice survives the trip through the form unchanged", () => {
     taxAmount: 297,
     total: 2995,
     clientId: 3,
-    projectId: null,
+    projectId: 9,
     billToName: "Jane",
     billToCompany: "Acme",
     billToAddress: "1 Road",
@@ -200,7 +200,7 @@ test("a stored invoice survives the trip through the form unchanged", () => {
   assert.ok(parsed.ok);
   assert.deepEqual(parsed.data, {
     clientId: 3,
-    projectId: null,
+    projectId: 9,
     billToName: "Jane",
     billToCompany: "Acme",
     billToAddress: "1 Road",

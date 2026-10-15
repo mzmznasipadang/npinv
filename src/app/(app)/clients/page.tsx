@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { requireSession } from "@/lib/session";
 import { connection } from "next/server";
 import { Plus } from "lucide-react";
 import { ClientDialog } from "@/components/client-dialog";
@@ -11,6 +13,7 @@ import { listClients } from "@/lib/repo";
 
 export default async function ClientsPage() {
   await connection();
+  await requireSession();
   const clients = listClients();
 
   return (
@@ -39,7 +42,7 @@ export default async function ClientsPage() {
           <TableBody>
             {clients.map((client) => (
               <TableRow key={client.id}>
-                <TableCell className="font-semibold">{client.name}</TableCell>
+                <TableCell className="font-semibold">{client.name}<div className="mt-2 flex gap-3 text-xs font-normal"><Link href={`/projects?clientId=${client.id}`} className="underline underline-offset-4">Projects</Link><Link href={`/invoices?clientId=${client.id}`} className="underline underline-offset-4">Invoices</Link></div></TableCell>
                 <TableCell>{client.company}</TableCell>
                 <TableCell>{client.email}</TableCell>
                 <TableCell>{client.phone}</TableCell>
