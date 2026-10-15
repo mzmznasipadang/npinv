@@ -1,5 +1,10 @@
 # Studio Dashboard verification and recovery
 
+Production was subsequently deployed by explicit user request; see
+[the deployment record](deployments/2026-10-15-studio-dashboard.md) for actual
+backup, migration, and live verification results. The local verification below
+records the state before that deployment.
+
 Local verification on 2026-10-15, Asia/Jakarta. All examples and browser records
 are synthetic. No production database, credentials, infrastructure, or routing
 was used or changed. The work is on `codex/studio-dashboard`.
