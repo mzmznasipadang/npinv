@@ -51,7 +51,9 @@ falls back to the invoice's default, as on the web print page.
 - **Self-contained:** it carries the print CSS, both brand images, and the Montserrat
   latin and latin-ext subsets (`public/fonts`) inline, so it loads nothing else. Responses
   send `Content-Security-Policy: default-src 'none'; img-src data:; font-src data:;
-  style-src 'unsafe-inline'`, `private, no-store`, and `nosniff`.
+  style-src 'unsafe-inline'`, `private, no-store, no-transform`, and `nosniff`.
+  `no-transform` stops proxies such as Cloudflare from rewriting the document, for
+  example replacing email addresses with "[email protected]".
 - **Errors:** 401 without a device session, 404 for an unknown invoice, 400 for bad
   parameters, 405 for anything but GET. All of them are JSON, like the rest of the API.
 
