@@ -1,14 +1,17 @@
 # Native mobile API
 
 All paths start with `/api/v1`. The iOS app uses the same SQLite file and financial
-repository functions as the dashboard. Business-data routes accept GET only.
-Device sessions use schema migration 5; existing invoices, projects, tasks,
+repository functions as the dashboard. Business-data routes are read-only except
+tasks, which the app can also create, edit and delete (see "Writes"). Device
+sessions use schema migrations 5 and 6; existing invoices, projects, tasks,
 clients, and web authentication remain intact.
 
 ## Authentication
 
 `POST /sessions` accepts JSON `{ "deviceName": "My iPhone", "password": "<entered at login>" }`.
-On success it returns 201 with `{ id, deviceName, createdAt, expiresAt, token }`.
+On success it returns 201 with `{ id, deviceName, createdAt, expiresAt, scope, token }`.
+New sessions have `scope: "write"`. Sessions created before migration 6 are
+`"read"`: they can read, but writes return 403 until the device signs in again.
 The opaque 256-bit token is returned once; SQLite stores its SHA-256 hash and a
 credential binding. It expires after 30 days. The password is never stored.
 
@@ -16,7 +19,7 @@ Every other endpoint requires `Authorization: Bearer <token>`. Web cookies do no
 provide API access. Expired, revoked, missing, or invalid credentials return 401
 JSON. Changing ADMIN_PASSWORD invalidates all mobile sessions.
 
-`GET /sessions` returns `{ data: [{ id, deviceName, createdAt, expiresAt, current }] }`.
+`GET /sessions` returns `{ data: [{ id, deviceName, createdAt, expiresAt, scope, current }] }`.
 `DELETE /sessions/:id` revokes that session. Web Settings also supports listing
 and revocation through authenticated Server Actions. Device labels are descriptive,
 not unique hardware identifiers.
@@ -89,10 +92,40 @@ failed password checks retain the existing 800 ms delay. Invalid requests return
 400, oversized login bodies 413, unauthorized requests 401, missing records 404,
 unsupported authenticated writes 405, and unexpected server failures a generic 500.
 
+## Writes
+
+Writes run the same shared function as the web Server Action (`src/lib/writes.ts`),
+so parsing, rules and transactions are identical. The record that comes back has
+the read endpoint's shape. After a successful write the route handler refreshes the
+dashboard, like the Server Actions do.
+
+| Request | Body | Success |
+| --- | --- | --- |
+| `POST /tasks` with `Idempotency-Key` | `{ projectId, title, dueDate, completed }` | 201 `{ data: task }` |
+| `PATCH /tasks/:id` | `{ title, dueDate, completed, updatedAt }` | 200 `{ data: task }` |
+| `DELETE /tasks/:id` | none | 200 `{ ok: true }` |
+
+- **Body.** JSON, at most 8 KiB, with exactly these keys and types; no query string.
+  Values use the web form's shapes: `dueDate` is `""` for no date. Anything else is 400.
+- **Validation.** 422 `{ message, errors: { field: message } }`, with the messages
+  `parseTaskForm` gives the web form.
+- **Conflicts.** `updatedAt` is the value the app last read (tasks now include it).
+  If the task has changed since, the PATCH writes nothing and returns 409. A PATCH
+  never moves a task to another project. DELETE has no version check, like the web's Remove.
+- **Retries.** `Idempotency-Key` (16 to 100 letters, digits, `-` or `_`) is required on
+  creates. A repeat of the same request with the same key, from the same session, returns
+  the stored response with `Idempotent-Replayed: true` instead of creating again. The same
+  key with a different request is 422. Only successes are stored, for 24 hours.
+- **Other statuses.** 401 without a valid session, 403 for a `read` session, 404 when the
+  task or its project is gone, 405 for other methods. Other resources still return 405
+  to writes.
+
 ## Rollout
 
 Back up the SQLite file before deploying using the existing deploy procedure.
-Migration 5 adds only device-session storage and runs transactionally. Rolling
+Migration 5 adds only device-session storage and runs transactionally. Migration 6
+adds the session `scope` column (existing sessions become `read`) and the
+`idempotency_keys` table; an older image ignores both. Rolling
 back the application leaves the extra table unused; restoring the complete
 pre-deploy backup also removes sessions created since that backup. Do not replace
 individual financial tables. Keep the backend behind the current HTTPS tailnet.

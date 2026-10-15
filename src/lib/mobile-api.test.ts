@@ -5,20 +5,21 @@ import * as repo from './repo.ts';
 import * as projects from './projects.ts';
 import { createDeviceSession } from './mobile-sessions.ts';
 import { handleMobileRequest } from './mobile-api.ts';
+import { parseTaskForm } from './project-schemas.ts';
 const NOW = Date.UTC(2026,9,15,3); const TODAY = '2026-10-15';
 let token: string;
 beforeEach(() => {
   process.env.ADMIN_PASSWORD = 'synthetic-test-password';
-  getDb().exec('DELETE FROM invoices; DELETE FROM projects; DELETE FROM clients; DELETE FROM device_sessions');
+  getDb().exec('DELETE FROM invoices; DELETE FROM projects; DELETE FROM clients; DELETE FROM device_sessions; DELETE FROM idempotency_keys');
   token = createDeviceSession('Synthetic phone', NOW).token;
 });
-async function api(path: string, method = 'GET', body?: unknown, credential: string | null = token) {
-  const headers: Record<string,string> = {};
+async function api(path: string, method = 'GET', body?: unknown, credential: string | null = token, extra: Record<string,string> = {}, now = NOW) {
+  const headers: Record<string,string> = {...extra};
   if (credential) headers.authorization = `Bearer ${credential}`;
-  if (body !== undefined) headers['content-type'] = 'application/json';
-  const response = await handleMobileRequest(new Request(`https://example.test/api/v1/${path}`, {method, headers, body:body === undefined ? undefined : JSON.stringify(body)}), NOW);
+  if (body !== undefined) headers['content-type'] ??= 'application/json';
+  const response = await handleMobileRequest(new Request(`https://example.test/api/v1/${path}`, {method, headers, body:body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body)}), now);
   assert.equal(response.headers.get('cache-control'), 'private, no-store');
-  return { status:response.status, body:await response.json() };
+  return { status:response.status, body:await response.json(), headers:response.headers };
 }
 const client = (name: string) => repo.createClient({name,company:'',address:'',email:'',phone:''});
 const project = (clientId: number, name: string) => projects.saveProject(null, {clientId,name,description:'',status:'in_progress',startDate:null,deadline:TODAY});
@@ -141,4 +142,91 @@ test('the print endpoint returns the escaped, self-contained invoice document fo
   assert.equal((await raw(`invoices/${id}/print/extra`)).status,404);
   assert.equal((await raw(`clients/${id}/print`)).status,404);
   assert.deepEqual((await api(`invoices/${id}`)).body.data.printVersions,['full','payments','dp']);
+});
+
+const KEY = 'synthetic-key-0000000001';
+const create = (body: unknown, key: string | null = KEY, credential: string | null = token, now = NOW) =>
+  api('tasks','POST',body,credential,key === null ? {} : {'idempotency-key':key},now);
+const taskCount = () => (getDb().prepare('SELECT COUNT(*) AS n FROM tasks').get() as {n:number}).n;
+test('writes need a write-scope device session; read sessions get 403 and other resources stay read-only', async () => {
+  const p = project(client('Studio'),'Design');
+  const t = projects.saveTask(p,null,{title:'Review',dueDate:'',completed:false});
+  for (const [path,method] of [['tasks','POST'],[`tasks/${t}`,'PATCH'],[`tasks/${t}`,'DELETE']]) {
+    assert.equal((await api(path,method,{},null)).status,401,method);
+  }
+  const read = createDeviceSession('Old phone', NOW).token;
+  getDb().prepare("UPDATE device_sessions SET scope = 'read' WHERE scope = 'write' AND device_name = 'Old phone'").run();
+  const denied = await create({projectId:p,title:'New',dueDate:'',completed:false},KEY,read);
+  assert.equal(denied.status,403); assert.match(denied.body.message,/Sign in again/);
+  assert.equal((await api(`tasks/${t}`,'DELETE',undefined,read)).status,403);
+  assert.equal((await api('tasks','GET',undefined,read)).status,200);
+  assert.equal(taskCount(),1);
+  assert.equal((await api('clients','POST',{})).status,405);
+  assert.equal((await api('tasks','PUT',{})).status,405);
+  assert.equal((await api(`tasks/${t}`,'POST',{})).status,405);
+  const login = await api('sessions','POST',{password:process.env.ADMIN_PASSWORD,deviceName:'New phone'},null);
+  assert.equal(login.body.scope,'write');
+  const listed = (await api('sessions')).body.data as {deviceName:string;scope:string}[];
+  assert.equal(listed.find(s => s.deviceName === 'Old phone')?.scope,'read');
+});
+test('task creates use strict JSON bodies and the shared parser for per-field errors', async () => {
+  const p = project(client('Studio'),'Design');
+  const valid = {projectId:p,title:'  Review copy  ',dueDate:'2026-10-20',completed:false};
+  for (const [label,body,extra] of [
+    ['unknown key',{...valid,notes:''},{}],['missing key',{projectId:p,title:'x',dueDate:''},{}],['wrong type',{...valid,completed:'no'},{}],
+    ['bad project id',{...valid,projectId:-1},{}],['malformed JSON','{',{}],['not JSON',JSON.stringify(valid),{'content-type':'text/plain'}],
+  ] as const) assert.equal((await api('tasks','POST',body,token,{'idempotency-key':KEY,...extra})).status,400,label);
+  assert.equal((await api('tasks?x=1','POST',valid,token,{'idempotency-key':KEY})).status,400,'query string');
+  assert.equal((await create(valid,null)).status,400,'missing key');
+  assert.equal((await create(valid,'short')).status,400,'malformed key');
+  assert.equal((await create({...valid,title:'x'.repeat(9000)})).status,413);
+  for (const values of [{title:'   ',dueDate:'',completed:false},{title:'x'.repeat(301),dueDate:'',completed:false},{title:'Ok',dueDate:'2026-02-30',completed:false}]) {
+    const invalid = await create({projectId:p,...values});
+    const shared = parseTaskForm(values);
+    assert.equal(invalid.status,422); assert.ok(!shared.ok); assert.deepEqual(invalid.body.errors,shared.errors);
+  }
+  assert.equal((await create({...valid,projectId:999999})).status,404);
+  assert.equal(taskCount(),0);
+  const created = await create(valid);
+  assert.equal(created.status,201);
+  assert.deepEqual({...created.body.data,id:0,updatedAt:''},{id:0,projectId:p,title:'Review copy',completed:false,dueDate:'2026-10-20',projectName:'Design',updatedAt:''});
+  assert.deepEqual((await api(`tasks/${created.body.data.id}`)).body.data,created.body.data);
+});
+test('task edits replace fields only when updatedAt matches; deletes report records already gone', async () => {
+  const p = project(client('Studio'),'Design');
+  const id = projects.saveTask(p,null,{title:'Review',dueDate:'',completed:false});
+  const seen = (await api(`tasks/${id}`)).body.data;
+  assert.equal((await api(`tasks/${id}`,'PATCH',{title:'Review',dueDate:'',completed:true})).status,400,'updatedAt is required');
+  assert.equal((await api(`tasks/${id}`,'PATCH',{projectId:p,title:'Review',dueDate:'',completed:true,updatedAt:seen.updatedAt})).status,400,'the project cannot move');
+  const done = await api(`tasks/${id}`,'PATCH',{title:'Review',dueDate:'',completed:true,updatedAt:seen.updatedAt});
+  assert.equal(done.status,200); assert.equal(done.body.data.completed,true); assert.equal(done.body.data.projectId,p);
+  getDb().prepare("UPDATE tasks SET title = 'Renamed on the web', updated_at = '2026-10-15 04:00:00.000' WHERE id = ?").run(id);
+  const stale = await api(`tasks/${id}`,'PATCH',{title:'Review',dueDate:'',completed:false,updatedAt:done.body.data.updatedAt});
+  assert.equal(stale.status,409); assert.match(stale.body.message,/changed elsewhere/);
+  assert.equal((await api(`tasks/${id}`)).body.data.title,'Renamed on the web');
+  const invalid = await api(`tasks/${id}`,'PATCH',{title:'',dueDate:'',completed:false,updatedAt:'2026-10-15 04:00:00.000'});
+  assert.equal(invalid.status,422); assert.equal(invalid.body.errors.title,'Enter a task title');
+  assert.equal((await api('tasks/999999','PATCH',{title:'x',dueDate:'',completed:false,updatedAt:'x'})).status,404);
+  assert.equal((await api(`tasks/${id}?x=1`,'DELETE')).status,400);
+  assert.equal((await api(`tasks/${id}`,'DELETE')).status,200);
+  assert.equal((await api(`tasks/${id}`,'DELETE')).status,404);
+  assert.equal(taskCount(),0);
+});
+test('Idempotency-Key replays a create once per session and never stores failures', async () => {
+  const p = project(client('Studio'),'Design');
+  const body = {projectId:p,title:'Invoice follow-up',dueDate:'',completed:false};
+  const first = await create(body);
+  const again = await create(body);
+  assert.equal(again.status,201); assert.equal(again.headers.get('idempotent-replayed'),'true');
+  assert.deepEqual(again.body,first.body); assert.equal(taskCount(),1);
+  const reused = await create({...body,title:'Something else'});
+  assert.equal(reused.status,422); assert.equal(taskCount(),1);
+  const other = createDeviceSession('Tablet',NOW).token;
+  assert.equal((await create(body,KEY,other)).status,201); assert.equal(taskCount(),2);
+  assert.equal((await create({...body,title:''},'synthetic-key-0000000002')).status,422);
+  assert.equal((await create(body,'synthetic-key-0000000002')).status,201); assert.equal(taskCount(),3);
+  const later = NOW + 25 * 3600_000;
+  assert.equal((await create(body,'synthetic-key-0000000003',token,later)).status,201);
+  const keys = (getDb().prepare('SELECT key FROM idempotency_keys ORDER BY key').all() as {key:string}[]).map(row => row.key);
+  assert.deepEqual(keys,['synthetic-key-0000000003'],'keys older than a day are purged');
 });
