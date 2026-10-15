@@ -25,7 +25,7 @@ not unique hardware identifiers.
 
 | Path | Filters |
 | --- | --- |
-| `/overview` | No parameters; financial summaries, business date, work counts, attention lists |
+| `/overview` | No parameters; financial summaries (with receivables `aging`), business date, work counts, attention lists |
 | `/projects` | `q`, `clientId`, `status`, `archived`, `attention`, `sort` |
 | `/tasks` | `q`, `projectId`, `clientId`, `completed`, `archived`, `dueFrom`, `dueTo`, `attention=due` |
 | `/clients` | `q` |
@@ -58,6 +58,11 @@ Search treats SQL wildcard characters literally. Empty `q` is allowed.
 Overview attention sections contain at most five records but counts cover all
 matching records. Its recent invoice list contains at most ten. Use the matching
 filtered collection endpoint for the rest.
+
+Each currency summary also includes `aging: { notDue, days1To30, days31To60, over60 }`:
+the outstanding balance of sent invoices split by days past the due date, using the
+Asia/Jakarta business date. Due today counts as not due; 60 days late is in
+`days31To60`. The four add up to `outstanding`, and the last three add up to `overdue`.
 
 Amounts are integers: whole rupiah for IDR and cents for USD. Percentages are basis
 points. Dates and overdue rules follow Asia/Jakarta. Payments received exclude

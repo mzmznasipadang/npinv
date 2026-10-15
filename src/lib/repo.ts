@@ -81,7 +81,9 @@ export type InvoiceRow = {
 };
 
 export type InvoiceFilter = { status?: DisplayStatus | "all"; q?: string; projectId?: number; clientId?: number; currency?: Currency; outstanding?: boolean };
-export type CurrencySummary = { currency: Currency; outstanding: number; overdue: number; paidThisMonth: number };
+/** Outstanding balance by days past due; due today is not yet due. The four add up to `outstanding`. */
+export type Aging = { notDue: number; days1To30: number; days31To60: number; over60: number };
+export type CurrencySummary = { currency: Currency; outstanding: number; overdue: number; paidThisMonth: number; aging: Aging };
 export type Result = { ok: true } | { ok: false; error: string };
 
 export class NotFoundError extends Error {}
@@ -480,20 +482,33 @@ export function deleteInvoice(id: number): boolean {
 // refuses to return anything larger, which would take the dashboard down.
 const CEILING = Number.MAX_SAFE_INTEGER;
 
+// The balance still owed on sent invoices that also match `when`.
+// shortcut: each sum is capped on its own, so past MAX_SAFE_INTEGER the aging buckets stop adding up to
+// `outstanding`; read BigInts if totals ever get that large.
+const owed = (when = "") => `MIN(COALESCE(SUM(CASE WHEN status = 'sent'${when} THEN total - settled END), 0), ${CEILING})`;
+
 export function dashboard(todayDate: string): { summaries: CurrencySummary[]; latest: InvoiceRow[] } {
-  const summaries = many<CurrencySummary>(
-    `SELECT currency,
-       MIN(COALESCE(SUM(CASE WHEN status = 'sent' THEN total - settled END), 0), ${CEILING}) AS outstanding,
-       MIN(COALESCE(SUM(CASE WHEN status = 'sent' AND due_date < ? THEN total - settled END), 0), ${CEILING})
-         AS overdue,
+  // `age` buckets days past due with the same rule as displayStatus: due today is not yet due.
+  const rows = many<Omit<CurrencySummary, "aging"> & Aging>(
+    `SELECT currency, ${owed()} AS outstanding, ${owed(" AND due_date < ?")} AS overdue,
+       ${owed(" AND age = 0")} AS notDue, ${owed(" AND age = 1")} AS days1To30,
+       ${owed(" AND age = 2")} AS days31To60, ${owed(" AND age = 3")} AS over60,
        MIN(COALESCE(SUM(received), 0), ${CEILING}) AS paidThisMonth
      FROM (SELECT currency, status, due_date, total, ${SETTLED} AS settled,
+             CASE WHEN due_date >= ? THEN 0 WHEN due_date >= ? THEN 1 WHEN due_date >= ? THEN 2 ELSE 3 END AS age,
              COALESCE((SELECT SUM(amount) FROM payments WHERE invoice_id = invoices.id AND kind = 'payment'
                AND substr(paid_on, 1, 7) = ?), 0) AS received
            FROM invoices)
      GROUP BY currency ORDER BY currency`,
     todayDate,
+    todayDate,
+    addDays(todayDate, -30),
+    addDays(todayDate, -60),
     todayDate.slice(0, 7),
   );
+  const summaries = rows.map(({ notDue, days1To30, days31To60, over60, ...summary }) => ({
+    ...summary,
+    aging: { notDue, days1To30, days31To60, over60 },
+  }));
   return { summaries, latest: listInvoices({}, todayDate, 10) };
 }
