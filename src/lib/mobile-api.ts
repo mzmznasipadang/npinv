@@ -1,10 +1,14 @@
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { z } from 'zod';
 import { checkPassword } from './auth.ts';
 import { createDeviceSession, listDeviceSessions, revokeDeviceSession, verifyDeviceSession } from './mobile-sessions.ts';
 import * as repo from './repo.ts';
 import * as projects from './projects.ts';
 import { pageOf, readClients, readClient, readTasks, readTask } from './mobile-read.ts';
-import { displayStatus, isValidDate, today } from './rules.ts';
+import { displayStatus, isValidDate, printVersions, today } from './rules.ts';
+import { invoicePrintDocument } from './invoice-print.ts';
+import type { PrintFonts, PrintImages } from './invoice-print.ts';
 
 class HTTPError extends Error { status:number; constructor(status:number,message:string) {super(message);this.status=status;} }
 const positive = z.string().regex(/^[1-9]\d{0,15}$/).transform(Number).refine(Number.isSafeInteger);
@@ -34,6 +38,20 @@ function parse<T>(schema:z.ZodType<T>,value:unknown):T {
 function json(data:unknown,status=200) {
   return Response.json(data,{status,headers:{'cache-control':'private, no-store','x-content-type-options':'nosniff'}});
 }
+// The app renders this document offline, so it may load nothing: images and fonts arrive inline and scripts never run.
+const PRINT_CSP="default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'";
+function html(body:string) {
+  return new Response(body,{headers:{'content-type':'text/html; charset=utf-8','cache-control':'private, no-store','x-content-type-options':'nosniff','content-security-policy':PRINT_CSP}});
+}
+// /public is behind the web login, so the document carries its images and fonts as data URIs. Read once, retried after a failure.
+let printAssets:Promise<{images:PrintImages;fonts:PrintFonts}>|undefined;
+function loadPrintAssets() {
+  const read=(path:string,type:string)=>readFile(join(process.cwd(),'public',path)).then(data=>`data:${type};base64,${data.toString('base64')}`);
+  printAssets??=Promise.all([read('brand/icon.png','image/png'),read('brand/logo-navy.png','image/png'),
+    read('fonts/montserrat-latin.woff2','font/woff2'),read('fonts/montserrat-latin-ext.woff2','font/woff2')])
+    .then(([icon,logo,latin,latinExt])=>({images:{icon,logo},fonts:{latin,latinExt}}));
+  return printAssets.catch(error=>{printAssets=undefined;throw error;});
+}
 async function loginBody(request:Request) {
   if(request.headers.get('content-type')?.split(';')[0].trim()!=='application/json') throw new HTTPError(400,'Send a JSON request.');
   const reader=request.body?.getReader(); if(!reader) throw new HTTPError(400,'A login body is required.');
@@ -57,6 +75,16 @@ export async function handleMobileRequest(request:Request,now=Date.now()):Promis
     const authorization=request.headers.get('authorization');
     const current=verifyDeviceSession(authorization?.match(/^Bearer ([a-f0-9]{64})$/)?.[1],now);
     if(!current) throw new HTTPError(401,'Your device session expired or was revoked. Sign in again.');
+    if(resource==='invoices' && idText && extra.length===1 && extra[0]==='print') {
+      if(method!=='GET') throw new HTTPError(405,'This API is read-only.');
+      const {version:asked}=parse(z.object({version:z.enum(['full','payments','dp']).optional()}).strict(),parameters(url));
+      const invoice=repo.getInvoice(parse(positive,idText));
+      if(!invoice) throw new HTTPError(404,'Record no longer exists.');
+      // Same choice as the web print page: an unavailable version falls back to the invoice's default one.
+      const {version}=printVersions(invoice.payments.length>0,invoice.downPaymentValue>0,asked);
+      const {images,fonts}=await loadPrintAssets();
+      return html(invoicePrintDocument(invoice,repo.getSettings(),version,images,fonts));
+    }
     if(extra.length || !resource) throw new HTTPError(404,'Not found.');
     if(resource==='sessions') {
       parse(z.object({}).strict(),parameters(url));
@@ -81,7 +109,7 @@ export async function handleMobileRequest(request:Request,now=Date.now()):Promis
       if(resource==='clients') data=readClient(id);
       if(resource==='tasks') data=readTask(id);
       if(resource==='projects') data=projects.getProject(id);
-      if(resource==='invoices') {const invoice=repo.getInvoice(id);data=invoice?{...invoice,display:displayStatus(invoice.status,invoice.dueDate,todayDate,invoice.paid)}:null;}
+      if(resource==='invoices') {const invoice=repo.getInvoice(id);data=invoice?{...invoice,display:displayStatus(invoice.status,invoice.dueDate,todayDate,invoice.paid),printVersions:printVersions(invoice.payments.length>0,invoice.downPaymentValue>0,undefined).versions}:null;}
       if(!data) throw new HTTPError(404,'Record no longer exists.');
       return json({data});
     }

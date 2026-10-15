@@ -23,7 +23,7 @@ async function api(path: string, method = 'GET', body?: unknown, credential: str
 const client = (name: string) => repo.createClient({name,company:'',address:'',email:'',phone:''});
 const project = (clientId: number, name: string) => projects.saveProject(null, {clientId,name,description:'',status:'in_progress',startDate:null,deadline:TODAY});
 test('all reads and session revocations require device authorization, not a web cookie', async () => {
-  for (const route of ['overview','projects','tasks','clients','invoices','sessions','invoices/1']) {
+  for (const route of ['overview','projects','tasks','clients','invoices','sessions','invoices/1','invoices/1/print']) {
     assert.equal((await api(route,'GET',undefined,null)).status,401);
   }
   assert.equal((await api('sessions/1','DELETE',undefined,null)).status,401);
@@ -107,4 +107,38 @@ test('overview attention links use complete counts and exclude completed project
   assert.equal(tasks.body.pagination.total,7);
   assert.equal(tasks.body.data.length,2);
   assert.equal(overview.body.data.work.activeCount,7);
+});
+async function raw(path: string, method = 'GET') {
+  return handleMobileRequest(new Request(`https://example.test/api/v1/${path}`, {method, headers:{authorization:`Bearer ${token}`}}), NOW);
+}
+test('the print endpoint returns the escaped, self-contained invoice document for the chosen version', async () => {
+  repo.updateSettings({...repo.getSettings(), businessName:'Studio <b>', taxLabel:'VAT"', paymentDetails:"Bank & 'Co'"});
+  const hostile = '<script>alert(1)</script>"><img src=x onerror=alert(2)>&';
+  const id = repo.saveInvoice(null,{clientId:client('Print client'),projectId:null,billToName:hostile,billToCompany:hostile,billToAddress:hostile,issueDate:'2026-10-01',dueDate:'2026-10-31',currency:'IDR',taxRateBp:1100,discountType:'percent',discountValue:1000,downPaymentType:'percent',downPaymentValue:3000,notes:hostile,items:[{description:hostile,qty:2,unitPrice:100000,notes:hostile}]});
+  repo.markSent(id,'PRINT-001');
+  repo.recordPayment(id,'IDR',{paidOn:'2026-10-05',amount:50000,note:hostile,writeOff:false});
+
+  const response = await raw(`invoices/${id}/print`);
+  assert.equal(response.status,200);
+  assert.equal(response.headers.get('content-type'),'text/html; charset=utf-8');
+  assert.equal(response.headers.get('cache-control'),'private, no-store');
+  assert.equal(response.headers.get('x-content-type-options'),'nosniff');
+  assert.equal(response.headers.get('content-security-policy'),"default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'");
+  const body = await response.text();
+  assert.ok(!body.includes('<script') && !body.includes('<img src=x'),'user text must never become markup');
+  assert.ok(body.includes('&lt;script&gt;alert(1)&lt;/script&gt;&quot;&gt;&lt;img src=x onerror=alert(2)&gt;&amp;'));
+  assert.ok(body.includes('Studio &lt;b&gt;') && body.includes('VAT&quot; 11%') && body.includes('Bank &amp; &#x27;Co&#x27;'));
+  assert.equal((body.match(/<img [^>]*src="data:image\/png;base64,/g) ?? []).length,2,'both brand images are inline');
+  assert.equal((body.match(/@font-face\{font-family:Montserrat;[^}]*src:url\(data:font\/woff2;base64,/g) ?? []).length,2,'both Montserrat subsets are inline');
+  assert.ok(!/src="\//.test(body),'nothing loads from the server');
+  assert.ok(body.includes('Balance due'),'an invoice with payments defaults to the payments version, like the web page');
+  assert.ok((await (await raw(`invoices/${id}/print?version=dp`)).text()).includes('Down payment due (30%)'));
+  assert.ok(!(await (await raw(`invoices/${id}/print?version=full`)).text()).includes('Balance due'));
+
+  for (const query of ['version=bad','version=full&version=dp','wat=1']) assert.equal((await raw(`invoices/${id}/print?${query}`)).status,400,query);
+  assert.equal((await raw('invoices/999999/print')).status,404);
+  assert.equal((await raw(`invoices/${id}/print`,'POST')).status,405);
+  assert.equal((await raw(`invoices/${id}/print/extra`)).status,404);
+  assert.equal((await raw(`clients/${id}/print`)).status,404);
+  assert.deepEqual((await api(`invoices/${id}`)).body.data.printVersions,['full','payments','dp']);
 });

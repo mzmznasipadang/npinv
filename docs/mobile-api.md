@@ -39,7 +39,21 @@ result set are empty. Page contents can change while the web dashboard is edited
 
 Details at `/projects/:id`, `/tasks/:id`, `/clients/:id`, and `/invoices/:id` return
 `{ data: record }`, or 404. Invoice details include line-item IDs, payment history,
-integer totals and balance, and the same derived display status as the web.
+integer totals and balance, the same derived display status as the web, and
+`printVersions`: the print versions this invoice offers (`full`, plus `payments` when
+it has payments and `dp` when it requests a down payment).
+
+`/invoices/:id/print` returns the invoice's print document as HTML instead of JSON. It
+accepts only an optional `version` (`full`, `payments`, `dp`); an unavailable version
+falls back to the invoice's default, as on the web print page.
+- **Markup:** it's the sheet the web print page renders, built by the same escaped
+  renderer in `src/lib/invoice-print.ts`.
+- **Self-contained:** it carries the print CSS, both brand images, and the Montserrat
+  latin and latin-ext subsets (`public/fonts`) inline, so it loads nothing else. Responses
+  send `Content-Security-Policy: default-src 'none'; img-src data:; font-src data:;
+  style-src 'unsafe-inline'`, `private, no-store`, and `nosniff`.
+- **Errors:** 401 without a device session, 404 for an unknown invoice, 400 for bad
+  parameters, 405 for anything but GET. All of them are JSON, like the rest of the API.
 
 Boolean parameters are `true`/`false`; dates are valid `YYYY-MM-DD` and ranges are
 inclusive. Unknown, repeated, malformed, or out-of-range parameters return 400.
