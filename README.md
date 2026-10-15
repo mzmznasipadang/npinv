@@ -55,3 +55,11 @@ This copies the last commit to `/srv/npinv/src` on naspad-server and runs `docke
 | Backup log | `journalctl -t npinv-backup` |
 
 To restore a backup: stop the container, replace `data/npinv.db` with the snapshot, delete `data/npinv.db-wal` and `data/npinv.db-shm` if present, and start the container.
+
+## Native iOS companion
+
+The native app lives in the sibling `NPiOS` workspace. It uses the authenticated,
+read-only `/api/v1` API: [contract and rollout](docs/mobile-api.md).
+Device sessions expire after 30 days and can be revoked individually in Settings.
+Deploy the matching backend before connecting the app; business-data editing
+continues through this dashboard.

@@ -16,7 +16,7 @@ const COLS = `p.id, p.client_id AS clientId, c.name AS clientName, p.name, p.des
 const STAMP = "strftime('%Y-%m-%d %H:%M:%f', 'now')";
 type Arg = string | number | null;
 
-export function listProjects(filter: ProjectFilter, todayDate: string): Project[] {
+function projectQuery(filter: ProjectFilter, todayDate: string): { clause: string; args: Arg[] } {
   const where = [filter.archived ? 'p.archived_at IS NOT NULL' : 'p.archived_at IS NULL'];
   const args: Arg[] = [];
   if (filter.clientId !== undefined) { where.push('p.client_id = ?'); args.push(filter.clientId); }
@@ -31,8 +31,18 @@ export function listProjects(filter: ProjectFilter, todayDate: string): Project[
     if (filter.attention === 'upcoming') { where.push('p.deadline BETWEEN ? AND ?'); args.push(todayDate, addDays(todayDate, 7)); }
     if (filter.attention === 'tasks') { where.push('EXISTS (SELECT 1 FROM tasks WHERE project_id = p.id AND completed = 0 AND due_date <= ?)'); args.push(addDays(todayDate, 7)); }
   }
+  return { clause: where.join(" AND "), args };
+}
+
+export function countProjects(filter: ProjectFilter, todayDate: string): number {
+  const {clause,args} = projectQuery(filter,todayDate);
+  return (getDb().prepare(`SELECT COUNT(*) AS total FROM projects p JOIN clients c ON c.id = p.client_id WHERE ${clause}`).get(...args) as {total:number}).total;
+}
+
+export function listProjects(filter: ProjectFilter, todayDate: string, limit = Number.MAX_SAFE_INTEGER, offset = 0): Project[] {
+  const {clause,args} = projectQuery(filter,todayDate);
   const order = filter.sort === 'deadline' ? 'p.deadline IS NULL, p.deadline, p.id DESC' : 'p.updated_at DESC, p.id DESC';
-  return getDb().prepare(`SELECT ${COLS} FROM projects p JOIN clients c ON c.id = p.client_id WHERE ${where.join(' AND ')} ORDER BY ${order}`).all(...args).map(row => ({...row}) as Project);
+  return getDb().prepare(`SELECT ${COLS} FROM projects p JOIN clients c ON c.id = p.client_id WHERE ${clause} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...args,limit,offset).map(row => ({...row}) as Project);
 }
 
 export function getProject(id: number): Project | null {
@@ -85,10 +95,11 @@ export function deleteTask(projectId: number, id: number): boolean {
   });
 }
 
-export function workSummary(todayDate: string): { activeCount: number; overdueCount: number; dueTaskCount: number; overdue: Project[]; upcoming: Project[]; tasks: (Task & {projectName:string})[] } {
-  const overdue = listProjects({attention:'overdue',sort:'deadline'},todayDate);
-  const upcoming = listProjects({attention:'upcoming',sort:'deadline'},todayDate);
+export function workSummary(todayDate: string, limit = Number.MAX_SAFE_INTEGER): { activeCount: number; overdueCount: number; dueTaskCount: number; overdue: Project[]; upcoming: Project[]; tasks: (Task & {projectName:string})[] } {
+  const overdue = listProjects({attention:'overdue',sort:'deadline'},todayDate,limit);
+  const upcoming = listProjects({attention:'upcoming',sort:'deadline'},todayDate,limit);
   const activeCount = (getDb().prepare("SELECT COUNT(*) AS count FROM projects WHERE archived_at IS NULL AND status = 'in_progress'").get() as {count:number}).count;
-  const tasks = getDb().prepare(`SELECT t.id, t.project_id AS projectId, t.title, t.completed, t.due_date AS dueDate, p.name AS projectName FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.completed = 0 AND t.due_date <= ? AND p.archived_at IS NULL AND p.status != 'completed' ORDER BY t.due_date, t.id`).all(addDays(todayDate,7)).map(row => ({...row,completed:false}) as Task & {projectName:string});
-  return {activeCount,overdueCount:overdue.length,dueTaskCount:tasks.length,overdue,upcoming,tasks};
+  const tasks = getDb().prepare(`SELECT t.id, t.project_id AS projectId, t.title, t.completed, t.due_date AS dueDate, p.name AS projectName FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.completed = 0 AND t.due_date <= ? AND p.archived_at IS NULL AND p.status != 'completed' ORDER BY t.due_date, t.id LIMIT ?`).all(addDays(todayDate,7),limit).map(row => ({...row,completed:false}) as Task & {projectName:string});
+  const dueTaskCount = (getDb().prepare(`SELECT COUNT(*) AS count FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.completed = 0 AND t.due_date <= ? AND p.archived_at IS NULL AND p.status != 'completed'`).get(addDays(todayDate,7)) as {count:number}).count;
+  return {activeCount,overdueCount:countProjects({attention:'overdue'},todayDate),dueTaskCount,overdue,upcoming,tasks};
 }

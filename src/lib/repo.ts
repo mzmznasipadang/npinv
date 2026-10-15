@@ -186,7 +186,7 @@ const PAID = "COALESCE((SELECT SUM(amount) FROM payments WHERE invoice_id = invo
 const ROW_COLS = `id, number, project_id AS projectId, bill_to_name AS billToName, bill_to_company AS billToCompany, issue_date AS issueDate,
   due_date AS dueDate, currency, total, ${PAID} AS paid, total - ${SETTLED} AS balance, status`;
 
-export function listInvoices(filter: InvoiceFilter, todayDate: string, limit = 1000): InvoiceRow[] {
+function invoiceQuery(filter: InvoiceFilter, todayDate: string): { clause: string; args: Arg[] } {
   const where: string[] = [];
   const args: Arg[] = [];
   if (filter.status === "draft" || filter.status === "paid") {
@@ -211,23 +211,33 @@ export function listInvoices(filter: InvoiceFilter, todayDate: string, limit = 1
     );
     args.push(like, like, like);
   }
+  return { clause: where.length ? `WHERE ${where.join(" AND ")}` : "", args };
+}
+
+export function countInvoices(filter: InvoiceFilter, todayDate: string): number {
+  const { clause, args } = invoiceQuery(filter, todayDate);
+  return one<{total:number}>(`SELECT COUNT(*) AS total FROM invoices ${clause}`, ...args)!.total;
+}
+
+export function listInvoices(filter: InvoiceFilter, todayDate: string, limit = 1000, offset = 0): InvoiceRow[] {
+  const { clause, args } = invoiceQuery(filter, todayDate);
   const rows = many<Omit<InvoiceRow, "display">>(
-    `SELECT ${ROW_COLS} FROM invoices ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-     ORDER BY issue_date DESC, id DESC LIMIT ?`,
+    `SELECT ${ROW_COLS} FROM invoices ${clause}
+     ORDER BY issue_date DESC, id DESC LIMIT ? OFFSET ?`,
     ...args,
-    limit,
+    limit, offset,
   );
   return rows.map((row) => ({ ...row, display: displayStatus(row.status, row.dueDate, todayDate, row.paid) }));
 }
 
-export function getInvoice(id: number): Invoice | null {
+export function getInvoice(id: number): (Invoice & { items: (ItemInput & { id: number })[] }) | null {
   const invoice = one<Omit<Invoice, "items" | "payments" | "paid" | "balance">>(
     `SELECT ${INVOICE_COLS} FROM invoices WHERE id = ?`,
     id,
   );
   if (!invoice) return null;
-  const items = many<ItemInput>(
-    "SELECT description, qty, unit_price AS unitPrice, notes FROM invoice_items WHERE invoice_id = ? ORDER BY position",
+  const items = many<ItemInput & { id: number }>(
+    "SELECT id, description, qty, unit_price AS unitPrice, notes FROM invoice_items WHERE invoice_id = ? ORDER BY position",
     id,
   );
   const payments = many<Payment>(

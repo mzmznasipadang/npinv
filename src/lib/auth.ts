@@ -10,6 +10,12 @@ function password(): string | null {
   return value && value.length >= 8 ? value : null;
 }
 
+/** Binds a device token hash to the current admin credential without storing it. */
+export function deviceCredentialBinding(tokenHash: string): string | null {
+  const key = password();
+  return key === null ? null : createHmac("sha256", key).update(`npinv-device:${tokenHash}`).digest("hex");
+}
+
 function sign(expires: number, key: string): string {
   return createHmac("sha256", key).update(String(expires)).digest("hex");
 }
