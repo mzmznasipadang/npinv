@@ -12,6 +12,7 @@ export type ItemFormValues = { description: string; qty: string; unitPrice: stri
 
 export type InvoiceFormValues = {
   clientId: string;
+  projectId: string;
   billToName: string;
   billToCompany: string;
   billToAddress: string;
@@ -94,6 +95,7 @@ export function parseInvoiceForm(values: unknown): Parsed<InvoiceInput> {
       .string()
       .regex(/^\d{0,15}$/, "Unknown client")
       .transform((s) => (s === "" ? null : Number(s))),
+    projectId: z.string().default("").refine(s => s === "" || (/^[1-9]\d{0,15}$/.test(s) && Number.isSafeInteger(Number(s))), "Choose a project").transform(s => s === "" ? null : Number(s)),
     billToName: required(200, "Enter the client's name"),
     billToCompany: text(200),
     billToAddress: text(500),

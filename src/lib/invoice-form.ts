@@ -17,6 +17,7 @@ function portionToInput(type: Portion["type"], value: number, currency: Currency
 export function blankInvoiceValues(s: Settings, todayDate: string): InvoiceFormValues {
   return {
     clientId: "",
+    projectId: "",
     billToName: "",
     billToCompany: "",
     billToAddress: "",
@@ -39,6 +40,7 @@ export function blankInvoiceValues(s: Settings, todayDate: string): InvoiceFormV
 export function invoiceToValues(inv: Invoice, s: Settings): InvoiceFormValues {
   return {
     clientId: inv.clientId === null ? "" : String(inv.clientId),
+    projectId: inv.projectId === null ? "" : String(inv.projectId),
     billToName: inv.billToName,
     billToCompany: inv.billToCompany,
     billToAddress: inv.billToAddress,

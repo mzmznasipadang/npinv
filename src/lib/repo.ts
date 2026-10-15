@@ -25,6 +25,7 @@ export type ItemInput = { description: string; qty: number; unitPrice: number; n
 
 export type InvoiceInput = {
   clientId: number | null;
+  projectId: number | null;
   billToName: string;
   billToCompany: string;
   billToAddress: string;
@@ -64,6 +65,7 @@ export type Invoice = InvoiceInput & {
 };
 
 export type InvoiceRow = {
+  projectId: number | null;
   id: number;
   number: string | null;
   billToName: string;
@@ -78,7 +80,7 @@ export type InvoiceRow = {
   display: DisplayStatus;
 };
 
-export type InvoiceFilter = { status?: DisplayStatus | "all"; q?: string };
+export type InvoiceFilter = { status?: DisplayStatus | "all"; q?: string; projectId?: number; clientId?: number; currency?: Currency; outstanding?: boolean };
 export type CurrencySummary = { currency: Currency; outstanding: number; overdue: number; paidThisMonth: number };
 export type Result = { ok: true } | { ok: false; error: string };
 
@@ -171,7 +173,7 @@ export function deleteClient(id: number): boolean {
 
 // Invoices
 
-const INVOICE_COLS = `id, number, client_id AS clientId, bill_to_name AS billToName, bill_to_company AS billToCompany,
+const INVOICE_COLS = `id, number, client_id AS clientId, project_id AS projectId, bill_to_name AS billToName, bill_to_company AS billToCompany,
   bill_to_address AS billToAddress, issue_date AS issueDate, due_date AS dueDate, currency, tax_rate_bp AS taxRateBp,
   discount_type AS discountType, discount_value AS discountValue, discount_amount AS discountAmount,
   dp_type AS downPaymentType, dp_value AS downPaymentValue,
@@ -181,7 +183,7 @@ const INVOICE_COLS = `id, number, client_id AS clientId, bill_to_name AS billToN
 const SETTLED = "COALESCE((SELECT SUM(amount) FROM payments WHERE invoice_id = invoices.id), 0)";
 const PAID = "COALESCE((SELECT SUM(amount) FROM payments WHERE invoice_id = invoices.id AND kind = 'payment'), 0)";
 
-const ROW_COLS = `id, number, bill_to_name AS billToName, bill_to_company AS billToCompany, issue_date AS issueDate,
+const ROW_COLS = `id, number, project_id AS projectId, bill_to_name AS billToName, bill_to_company AS billToCompany, issue_date AS issueDate,
   due_date AS dueDate, currency, total, ${PAID} AS paid, total - ${SETTLED} AS balance, status`;
 
 export function listInvoices(filter: InvoiceFilter, todayDate: string, limit = 1000): InvoiceRow[] {
@@ -197,6 +199,10 @@ export function listInvoices(filter: InvoiceFilter, todayDate: string, limit = 1
     where.push("status = 'sent' AND due_date < ?");
     args.push(todayDate);
   }
+  if (filter.projectId !== undefined) { where.push("project_id = ?"); args.push(filter.projectId); }
+  if (filter.clientId !== undefined) { where.push("client_id = ?"); args.push(filter.clientId); }
+  if (filter.currency) { where.push("currency = ?"); args.push(filter.currency); }
+  if (filter.outstanding) where.push(`status = 'sent' AND total - ${SETTLED} > 0`);
   const q = filter.q?.trim();
   if (q) {
     const like = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
@@ -269,18 +275,29 @@ export function saveInvoice(id: number | null, input: InvoiceInput): number {
       input.clientId !== null && one("SELECT 1 AS found FROM clients WHERE id = ?", input.clientId)
         ? input.clientId
         : null;
+    const projectId = input.projectId;
+    if (projectId !== null) {
+      const project = one<{clientId: number; archivedAt: string | null}>("SELECT client_id AS clientId, archived_at AS archivedAt FROM projects WHERE id = ?", projectId);
+      const current = id === null ? undefined : one<{projectId: number | null}>("SELECT project_id AS projectId FROM invoices WHERE id = ?", id);
+      if (!project || clientId === null || project.clientId !== clientId) {
+        throw new ProjectConflictError("projectId", "Choose a project belonging to the selected client.");
+      }
+      if (project.archivedAt && current?.projectId !== projectId) {
+        throw new ProjectConflictError("projectId", "This project was archived. Restore it before linking a new invoice.");
+      }
+    }
     const fields: Arg[] = [
-      clientId, input.billToName, input.billToCompany, input.billToAddress, input.issueDate, input.dueDate,
+      clientId, projectId, input.billToName, input.billToCompany, input.billToAddress, input.issueDate, input.dueDate,
       input.currency, input.taxRateBp, input.discountType, input.discountValue, input.downPaymentType,
       input.downPaymentValue, input.notes, totals.subtotal, totals.discountAmount, totals.taxAmount, totals.total,
     ];
     let invoiceId: number;
     if (id === null) {
       invoiceId = run(
-        `INSERT INTO invoices (client_id, bill_to_name, bill_to_company, bill_to_address, issue_date, due_date,
+        `INSERT INTO invoices (client_id, project_id, bill_to_name, bill_to_company, bill_to_address, issue_date, due_date,
            currency, tax_rate_bp, discount_type, discount_value, dp_type, dp_value, notes, subtotal,
            discount_amount, tax_amount, total)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ...fields,
       ).id;
     } else {
@@ -300,7 +317,7 @@ export function saveInvoice(id: number | null, input: InvoiceInput): number {
         );
       }
       run(
-        `UPDATE invoices SET client_id = ?, bill_to_name = ?, bill_to_company = ?, bill_to_address = ?,
+        `UPDATE invoices SET client_id = ?, project_id = ?, bill_to_name = ?, bill_to_company = ?, bill_to_address = ?,
            issue_date = ?, due_date = ?, currency = ?, tax_rate_bp = ?, discount_type = ?, discount_value = ?,
            dp_type = ?, dp_value = ?, notes = ?, subtotal = ?, discount_amount = ?, tax_amount = ?, total = ?,
            updated_at = datetime('now')
@@ -427,6 +444,7 @@ export function duplicateInvoice(id: number, todayDate: string): number | null {
   const { defaultDueDays } = getSettings();
   return saveInvoice(null, {
     clientId: source.clientId,
+    projectId: source.projectId !== null && one("SELECT id FROM projects WHERE id = ? AND archived_at IS NULL", source.projectId) ? source.projectId : null,
     billToName: source.billToName,
     billToCompany: source.billToCompany,
     billToAddress: source.billToAddress,

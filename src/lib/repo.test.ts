@@ -9,6 +9,7 @@ const TODAY = "2026-10-12";
 function input(overrides: Partial<InvoiceInput> = {}): InvoiceInput {
   return {
     clientId: null,
+    projectId: null,
     billToName: "PT Example",
     billToCompany: "Example Group",
     billToAddress: "Jl. Example 1",
@@ -43,7 +44,7 @@ function invoice(id: number): repo.Invoice {
 }
 
 beforeEach(() => {
-  getDb().exec("DELETE FROM invoices; DELETE FROM clients;");
+  getDb().exec("DELETE FROM invoices; DELETE FROM projects; DELETE FROM clients;");
 });
 
 test("settings start with the documented defaults", () => {
@@ -471,4 +472,65 @@ test("the dashboard does not fail when sent totals add up past what a number can
   const { summaries } = repo.dashboard(TODAY);
   assert.equal(summaries.length, 1);
   assert.equal(summaries[0].outstanding, Number.MAX_SAFE_INTEGER);
+});
+
+test('invoice project links enforce clients and archived history atomically', async () => {
+  const { saveProject, setProjectArchived } = await import('./projects.ts');
+  const c = repo.createClient({name:'Synthetic A',company:'',address:'',email:'',phone:''});
+  const other = repo.createClient({name:'Synthetic B',company:'',address:'',email:'',phone:''});
+  const projectInput = {clientId:c, name:'Brand', description:'', status:'in_progress' as const, startDate:null, deadline:null};
+  const projectId = saveProject(null, projectInput);
+  const id = repo.saveInvoice(null, input({clientId:c, projectId}));
+  repo.markSent(id, 'INV-2026-901');
+  repo.recordPayment(id, 'IDR', pay(100));
+  const before = invoice(id);
+  assert.throws(() => repo.saveInvoice(id, input({clientId:other, projectId})), repo.ProjectConflictError);
+  assert.deepEqual(invoice(id), before);
+  assert.throws(() => repo.saveInvoice(null, input({clientId:c, projectId:999})), repo.ProjectConflictError);
+  assert.throws(() => repo.saveInvoice(null, input({clientId:999, projectId})), repo.ProjectConflictError);
+  assert.throws(() => saveProject(projectId, {...projectInput, clientId:other}), repo.ProjectConflictError);
+  repo.updateClient(c,{name:'New name',company:'Updated',address:'Changed',email:'',phone:''});
+  saveProject(projectId,{...projectInput,status:'completed'});
+  setProjectArchived(projectId,true);
+  assert.deepEqual(invoice(id), before);
+  assert.throws(() => repo.saveInvoice(null, input({clientId:c,projectId})), repo.ProjectConflictError);
+  repo.saveInvoice(id,{...before, notes:'Revised notes'});
+  assert.equal(invoice(id).projectId, projectId);
+  const copy = repo.duplicateInvoice(id, TODAY)!;
+  assert.equal(invoice(copy).projectId, null);
+  assert.equal(invoice(id).projectId, projectId);
+  setProjectArchived(projectId,false);
+  assert.equal(invoice(repo.duplicateInvoice(id,TODAY)!).projectId,projectId);
+  repo.saveInvoice(id,{...before,projectId:null});
+  assert.equal(invoice(id).projectId,null);
+});
+
+test('invoice project filters compose with client, currency and collectible balances', async () => {
+  const {saveProject} = await import('./projects.ts');
+  const c = repo.createClient({name:'Filter client',company:'',address:'',email:'',phone:''});
+  const projectId = saveProject(null,{clientId:c,name:'Filter project',description:'',status:'planned',startDate:null,deadline:null});
+  const draft = repo.saveInvoice(null,input({clientId:c,projectId}));
+  const sent = sentInvoice('INV-2026-801',{clientId:c,projectId});
+  const unlinked = repo.saveInvoice(null,input({clientId:c,projectId:null}));
+  assert.deepEqual(repo.listInvoices({projectId},TODAY).map(r=>r.id),[sent,draft]);
+  assert.deepEqual(repo.listInvoices({projectId,clientId:c,outstanding:true,currency:'IDR'},TODAY).map(r=>r.id),[sent]);
+  assert.equal(repo.listInvoices({projectId,currency:'USD'},TODAY).length,0);
+  assert.equal(repo.listInvoices({projectId,clientId:999},TODAY).length,0);
+  assert.ok(repo.listInvoices({clientId:c},TODAY).some(r=>r.id===unlinked));
+  repo.recordPayment(sent,'IDR',pay(3_000_000));
+  assert.equal(repo.listInvoices({projectId,outstanding:true},TODAY).length,0);
+});
+
+test('stale project-prefilled invoice is rejected if its client changes or it is archived', async () => {
+  const {saveProject,setProjectArchived} = await import('./projects.ts');
+  const a = repo.createClient({name:'Before',company:'',address:'',email:'',phone:''});
+  const b = repo.createClient({name:'After',company:'',address:'',email:'',phone:''});
+  const project = {clientId:a,name:'Stale',description:'',status:'planned' as const,startDate:null,deadline:null};
+  const projectId = saveProject(null,project);
+  const stale = input({clientId:a,projectId});
+  saveProject(projectId,{...project,clientId:b});
+  assert.throws(()=>repo.saveInvoice(null,stale),repo.ProjectConflictError);
+  setProjectArchived(projectId,true);
+  assert.throws(()=>repo.saveInvoice(null,{...stale,clientId:b}),repo.ProjectConflictError);
+  assert.equal(repo.listInvoices({},TODAY).length,0);
 });

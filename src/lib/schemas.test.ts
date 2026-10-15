@@ -22,6 +22,7 @@ const SETTINGS: Settings = {
 function values(overrides: Partial<InvoiceFormValues> = {}): InvoiceFormValues {
   return {
     clientId: "",
+    projectId: "",
     billToName: "PT Example",
     billToCompany: "",
     billToAddress: "",
@@ -53,6 +54,7 @@ test("a valid form becomes repository input in the smallest unit", () => {
   assert.ok(parsed.ok);
   assert.deepEqual(parsed.data, {
     clientId: 7,
+    projectId: null,
     billToName: "PT Example",
     billToCompany: "",
     billToAddress: "",
@@ -176,6 +178,7 @@ test("a stored invoice survives the trip through the form unchanged", () => {
     taxAmount: 297,
     total: 2995,
     clientId: 3,
+    projectId: null,
     billToName: "Jane",
     billToCompany: "Acme",
     billToAddress: "1 Road",
@@ -197,6 +200,7 @@ test("a stored invoice survives the trip through the form unchanged", () => {
   assert.ok(parsed.ok);
   assert.deepEqual(parsed.data, {
     clientId: 3,
+    projectId: null,
     billToName: "Jane",
     billToCompany: "Acme",
     billToAddress: "1 Road",
@@ -295,4 +299,12 @@ test("the payment form starts with today and the full balance", () => {
     note: "",
     writeOff: false,
   });
+});
+
+test('invoice project field is nullable for older forms and validates explicit links', () => {
+  assert.equal(parseInvoiceForm({...values(),projectId:'0'}).ok,false);
+  assert.equal(parseInvoiceForm({...values(),projectId:['1']}).ok,false);
+  const old = {...values()} as Record<string,unknown>; delete old.projectId;
+  const parsed = parseInvoiceForm(old); assert.ok(parsed.ok); assert.equal(parsed.data.projectId,null);
+  const linked = parseInvoiceForm({...values(),projectId:'7'}); assert.ok(linked.ok); assert.equal(linked.data.projectId,7);
 });
