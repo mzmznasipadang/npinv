@@ -91,8 +91,41 @@ INSERT INTO payments (invoice_id, paid_on, amount)
   SELECT id, COALESCE(paid_at, issue_date), total FROM invoices WHERE status = 'paid' AND total > 0;
 `;
 
+// Version 4: studio projects and tasks. Legacy invoice values remain untouched.
+const PROJECTS = `
+CREATE TABLE projects (
+  id INTEGER PRIMARY KEY,
+  client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE RESTRICT,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'planned' CHECK (status IN ('planned', 'in_progress', 'on_hold', 'completed')),
+  start_date TEXT,
+  deadline TEXT,
+  archived_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+);
+CREATE INDEX projects_client ON projects(client_id);
+CREATE INDEX projects_status_deadline ON projects(archived_at, status, deadline);
+CREATE INDEX projects_updated ON projects(updated_at);
+CREATE TABLE tasks (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1)),
+  due_date TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+);
+CREATE INDEX tasks_project ON tasks(project_id, completed, due_date);
+CREATE INDEX tasks_due ON tasks(completed, due_date);
+ALTER TABLE invoices ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE RESTRICT;
+CREATE INDEX invoices_project ON invoices(project_id);
+CREATE INDEX invoices_client ON invoices(client_id);
+`;
+
 // Step i takes the database from version i to version i + 1.
-const STEPS = [SCHEMA, DISCOUNT, PAYMENTS];
+const STEPS = [SCHEMA, DISCOUNT, PAYMENTS, PROJECTS];
 
 /** Brings the database up to `target`, the latest version by default. */
 export function migrate(db: DatabaseSync, target = STEPS.length): void {

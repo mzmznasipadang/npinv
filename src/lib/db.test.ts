@@ -25,7 +25,7 @@ test("upgrading from version 2 turns each paid invoice into one full payment and
 
   migrate(db);
 
-  assert.equal(version(db), 3);
+  assert.equal(version(db), 4);
   assert.deepEqual(rows(db, "SELECT invoice_id AS invoiceId, paid_on AS paidOn, amount, kind, note FROM payments"), [
     { invoiceId: 1, paidOn: "2026-10-05", amount: 1_000_000, kind: "payment", note: "" },
   ]);
@@ -53,7 +53,7 @@ test("migrating an up-to-date database changes nothing", () => {
   const db = new DatabaseSync(":memory:");
   migrate(db);
   migrate(db);
-  assert.equal(version(db), 3);
+  assert.equal(version(db), 4);
 });
 
 test("a step that fails leaves the database at its old version", () => {
@@ -64,4 +64,62 @@ test("a step that fails leaves the database at its old version", () => {
   assert.equal(version(db), 2);
   const columns = rows(db, "PRAGMA table_info(invoices)").map((column) => column.name);
   assert.ok(!columns.includes("dp_type"));
+});
+
+test("studio migration preserves all legacy financial data and gives every invoice no project", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec("PRAGMA foreign_keys = ON");
+  migrate(db, 3);
+  db.exec(`INSERT INTO clients (id, name) VALUES (1, 'Synthetic client');
+    INSERT INTO invoices (id, client_id, number, bill_to_name, issue_date, due_date, currency, status, subtotal, total, discount_type, discount_value, discount_amount)
+    VALUES (1, 1, NULL, 'Draft snapshot', '2026-10-01', '2026-10-10', 'USD', 'draft', 1000, 900, 'amount', 100, 100),
+    (2, 1, 'INV-2026-001', 'Sent snapshot', '2026-10-01', '2026-10-10', 'IDR', 'sent', 2000, 2000, 'percent', 0, 0),
+    (3, 1, 'INV-2026-002', 'Paid snapshot', '2026-10-01', '2026-10-10', 'USD', 'paid', 3000, 3000, 'percent', 0, 0);
+    INSERT INTO invoice_items (invoice_id, position, description, qty, unit_price) VALUES (1, 0, 'Design', 1, 1000);
+    INSERT INTO payments (invoice_id, paid_on, amount) VALUES (2, '2026-10-02', 500), (3, '2026-10-03', 3000);`);
+  const tables = ['invoices', 'invoice_items', 'payments', 'clients', 'settings'];
+  const before = tables.map(t => rows(db, `SELECT * FROM ${t} ORDER BY id`));
+  migrate(db);
+  assert.equal(version(db), 4);
+  for (const [i, table] of tables.entries()) {
+    const after = rows(db, `SELECT * FROM ${table} ORDER BY id`).map(row => {
+      const copy = { ...row };
+      if (table === 'invoices') { assert.equal(copy.project_id, null); delete copy.project_id; }
+      return copy;
+    });
+    assert.deepEqual(after, before[i]);
+  }
+  assert.deepEqual(rows(db, 'PRAGMA foreign_key_check'), []);
+  migrate(db);
+  assert.equal(version(db), 4);
+  db.close();
+});
+
+test("project relationships protect financial records and only tasks cascade", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec("PRAGMA foreign_keys = ON");
+  migrate(db);
+  db.exec(`INSERT INTO clients (id, name) VALUES (1, 'Synthetic');
+    INSERT INTO projects (id, client_id, name) VALUES (1, 1, 'Design');
+    INSERT INTO tasks (project_id, title) VALUES (1, 'Sketch');
+    INSERT INTO invoices (id, client_id, project_id, bill_to_name, issue_date, due_date, currency)
+      VALUES (1, 1, 1, 'Snapshot', '2026-10-01', '2026-10-10', 'IDR');`);
+  assert.throws(() => db.exec('DELETE FROM clients WHERE id = 1'), /FOREIGN KEY/);
+  assert.throws(() => db.exec('DELETE FROM projects WHERE id = 1'), /FOREIGN KEY/);
+  assert.equal(rows(db, 'SELECT * FROM invoices').length, 1);
+  db.exec('UPDATE invoices SET project_id = NULL; DELETE FROM projects WHERE id = 1');
+  assert.equal(rows(db, 'SELECT * FROM tasks').length, 0);
+  assert.equal(rows(db, 'SELECT * FROM invoices').length, 1);
+  db.close();
+});
+
+test("a failed studio migration preserves version 3", () => {
+  const db = new DatabaseSync(":memory:");
+  migrate(db, 3);
+  db.exec('CREATE TABLE tasks (x INTEGER)');
+  assert.throws(() => migrate(db));
+  assert.equal(version(db), 3);
+  assert.equal(rows(db, "SELECT name FROM sqlite_master WHERE name = 'projects'").length, 0);
+  assert.ok(!rows(db, 'PRAGMA table_info(invoices)').some(c => c.name === 'project_id'));
+  db.close();
 });
