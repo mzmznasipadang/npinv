@@ -84,3 +84,11 @@ export function deleteTask(projectId: number, id: number): boolean {
     return deleted;
   });
 }
+
+export function workSummary(todayDate: string): { activeCount: number; overdueCount: number; dueTaskCount: number; overdue: Project[]; upcoming: Project[]; tasks: (Task & {projectName:string})[] } {
+  const overdue = listProjects({attention:'overdue',sort:'deadline'},todayDate);
+  const upcoming = listProjects({attention:'upcoming',sort:'deadline'},todayDate);
+  const activeCount = (getDb().prepare("SELECT COUNT(*) AS count FROM projects WHERE archived_at IS NULL AND status = 'in_progress'").get() as {count:number}).count;
+  const tasks = getDb().prepare(`SELECT t.id, t.project_id AS projectId, t.title, t.completed, t.due_date AS dueDate, p.name AS projectName FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.completed = 0 AND t.due_date <= ? AND p.archived_at IS NULL AND p.status != 'completed' ORDER BY t.due_date, t.id`).all(addDays(todayDate,7)).map(row => ({...row,completed:false}) as Task & {projectName:string});
+  return {activeCount,overdueCount:overdue.length,dueTaskCount:tasks.length,overdue,upcoming,tasks};
+}

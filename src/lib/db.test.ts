@@ -123,3 +123,35 @@ test("a failed studio migration preserves version 3", () => {
   assert.ok(!rows(db, 'PRAGMA table_info(invoices)').some(c => c.name === 'project_id'));
   db.close();
 });
+
+test('a synthetic file database migrates and can be recovered from its pre-migration backup', async () => {
+  const {mkdtempSync, copyFileSync, rmSync} = await import('node:fs');
+  const {tmpdir} = await import('node:os');
+  const {join} = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'npinv-migration-'));
+  const path = join(dir,'studio.db');
+  const backup = join(dir,'before-v4.db');
+  try {
+    const db = new DatabaseSync(path);
+    db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL');
+    migrate(db,3);
+    db.exec(`INSERT INTO invoices (number,bill_to_name,issue_date,due_date,currency,status,total)
+      VALUES ('INV-2026-001','Synthetic snapshot','2026-10-01','2026-10-14','USD','sent',10000);
+      INSERT INTO payments (invoice_id,paid_on,amount) VALUES (1,'2026-10-10',2500)`);
+    const before = rows(db,'SELECT * FROM payments');
+    db.exec(`VACUUM INTO '${backup.replace(/'/g,"''")}'`);
+    migrate(db);
+    assert.equal(version(db),4);
+    assert.equal(rows(db,'SELECT project_id FROM invoices')[0].project_id,null);
+    assert.deepEqual(rows(db,'SELECT * FROM payments'),before);
+    assert.deepEqual(rows(db,'PRAGMA foreign_key_check'),[]);
+    db.close();
+    copyFileSync(backup,path);
+    const restored = new DatabaseSync(path);
+    assert.equal(version(restored),3);
+    assert.deepEqual(rows(restored,'SELECT * FROM payments'),before);
+    assert.equal(rows(restored,'SELECT total FROM invoices')[0].total,10000);
+    assert.ok(!rows(restored,'PRAGMA table_info(invoices)').some(c => c.name === 'project_id'));
+    restored.close();
+  } finally { rmSync(dir,{recursive:true,force:true}); }
+});

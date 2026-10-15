@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/sidebar";
 
 const NAV = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/projects", label: "Projects", icon: FolderOpen },
   { href: "/invoices", label: "Invoices", icon: FileText },
   { href: "/clients", label: "Clients", icon: Users },
@@ -60,7 +60,7 @@ export function AppSidebar() {
   return (
     <Sidebar>
       <SidebarHeader className="px-4 py-5">
-        <Link href="/" aria-label="Naspad Studio, dashboard">
+        <Link href="/" aria-label="Naspad Studio, overview">
           {/* The sidebar is Navy in both themes, so it takes the white-wordmark logo. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/brand/logo-white.svg" alt="Naspad Studio" className="h-9 w-auto" />

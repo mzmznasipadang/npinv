@@ -64,3 +64,29 @@ test('search, archive, dates and status filters describe the correct projects', 
   p.setProjectArchived(archived, false);
   assert.equal(p.listProjects({}, TODAY).length, 7);
 });
+
+test('work summary uses calendar boundaries, excludes finished work and counts tasks independently of invoices', () => {
+  const c = client();
+  const active = p.saveProject(null,input(c,{status:'in_progress',deadline:'2026-10-14'}));
+  const today = p.saveProject(null,input(c,{deadline:TODAY}));
+  const week = p.saveProject(null,input(c,{deadline:'2026-10-22'}));
+  p.saveProject(null,input(c,{deadline:'2026-10-23'}));
+  p.saveProject(null,input(c));
+  const done = p.saveProject(null,input(c,{status:'completed',deadline:'2026-10-01'}));
+  const archived = p.saveProject(null,input(c,{status:'in_progress',deadline:'2026-10-01'})); p.setProjectArchived(archived,true);
+  const due = p.saveTask(active,null,{title:'Overdue',dueDate:'2026-10-14',completed:false});
+  const dueToday = p.saveTask(today,null,{title:'Today',dueDate:TODAY,completed:false});
+  const dueWeek = p.saveTask(week,null,{title:'Week',dueDate:'2026-10-22',completed:false});
+  p.saveTask(week,null,{title:'Later',dueDate:'2026-10-23',completed:false});
+  p.saveTask(active,null,{title:'No date',dueDate:null,completed:false});
+  p.saveTask(active,null,{title:'Finished',dueDate:'2026-10-14',completed:true});
+  for (const id of [done,archived]) p.saveTask(id,null,{title:'Hidden',dueDate:'2026-10-14',completed:false});
+  getDb().prepare(`INSERT INTO invoices (client_id, project_id, bill_to_name, issue_date, due_date, currency) VALUES (?, ?, 'Snapshot', '2026-10-01', '2026-10-10', 'IDR'), (?, ?, 'Snapshot', '2026-10-01', '2026-10-10', 'USD')`).run(c,active,c,active);
+  const summary = p.workSummary(TODAY);
+  assert.equal(summary.activeCount,1); assert.equal(summary.overdueCount,1); assert.equal(summary.dueTaskCount,3);
+  assert.deepEqual(summary.overdue.map(r=>r.id),[active]);
+  assert.deepEqual(summary.upcoming.map(r=>r.id),[today,week]);
+  assert.deepEqual(summary.tasks.map(r=>r.id),[due,dueToday,dueWeek]);
+  assert.equal(p.getProject(active)?.taskCount,3);
+  assert.deepEqual(p.listProjects({attention:'tasks',sort:'deadline'},TODAY).map(r=>r.id),[active,today,week]);
+});

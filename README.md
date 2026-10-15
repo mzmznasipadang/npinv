@@ -1,9 +1,14 @@
 # NPInv
 
-Invoice dashboard for Naspad Studio: create invoices, save them as branded A4 PDFs, and track what is outstanding, overdue and paid.
+Studio dashboard for Naspad Studio: track client projects and task checklists, link invoices to projects, save branded A4 PDFs, and track what is outstanding, overdue and paid.
 
 - Design: `docs/superpowers/specs/2026-10-12-npinv-design.md`
 - Live (tailnet only): https://naspad-server.<tailnet>.ts.net:8445
+
+- Studio dashboard design: `docs/superpowers/specs/2026-10-15-studio-dashboard-design.md`
+- Local verification, migration rehearsal, and recovery: `docs/studio-dashboard-verification.md`
+
+Projects can be archived and restored without changing invoice history. Clients with projects cannot be deleted; linked projects cannot move to a different client.
 
 ## Develop
 
