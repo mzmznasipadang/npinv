@@ -8,6 +8,8 @@ import { today } from "./rules";
 import { parseClientForm, parseInvoiceForm, parseInvoiceNumber, parsePaymentForm, parseSettingsForm } from "./schemas";
 import type { ClientFormValues, FormState, InvoiceFormValues, PaymentFormValues, SettingsFormValues } from "./schemas";
 
+import { requireSession } from "./session";
+
 const GONE = "This invoice no longer exists.";
 
 // Arguments arrive from the browser, so ids are checked like any other input.
@@ -20,6 +22,7 @@ function refresh(): void {
 }
 
 export async function saveSettingsAction(values: SettingsFormValues): Promise<FormState> {
+  await requireSession();
   const parsed = parseSettingsForm(values);
   if (!parsed.ok) return { errors: parsed.errors };
   repo.updateSettings(parsed.data);
@@ -28,6 +31,7 @@ export async function saveSettingsAction(values: SettingsFormValues): Promise<Fo
 }
 
 export async function saveClientAction(id: number | null, values: ClientFormValues): Promise<FormState> {
+  await requireSession();
   if (id !== null && !isId(id)) return { message: "This client no longer exists." };
   const parsed = parseClientForm(values);
   if (!parsed.ok) return { errors: parsed.errors };
@@ -38,12 +42,20 @@ export async function saveClientAction(id: number | null, values: ClientFormValu
 }
 
 export async function deleteClientAction(id: number): Promise<FormState> {
-  if (!isId(id) || !repo.deleteClient(id)) return { message: "This client no longer exists." };
+  await requireSession();
+  if (!isId(id)) return { message: "This client no longer exists." };
+  try {
+    if (!repo.deleteClient(id)) return { message: "This client no longer exists." };
+  } catch (error) {
+    if (error instanceof repo.ProjectConflictError) return { message: error.message };
+    throw error;
+  }
   refresh();
   return { ok: true };
 }
 
 export async function saveInvoiceAction(id: number | null, values: InvoiceFormValues): Promise<FormState> {
+  await requireSession();
   if (id !== null && !isId(id)) return { message: GONE };
   const parsed = parseInvoiceForm(values);
   if (!parsed.ok) return { errors: parsed.errors };
@@ -62,6 +74,7 @@ export async function saveInvoiceAction(id: number | null, values: InvoiceFormVa
 }
 
 export async function markSentAction(id: number, number: string): Promise<FormState> {
+  await requireSession();
   if (!isId(id)) return { message: GONE };
   const parsed = parseInvoiceNumber(number);
   if (!parsed.ok) return { errors: parsed.errors };
@@ -77,6 +90,7 @@ export async function recordPaymentAction(
   shown: { currency: Currency; balance: number },
   values: PaymentFormValues,
 ): Promise<FormState> {
+  await requireSession();
   if (!isId(id)) return { message: GONE };
   const currency = shown?.currency;
   if ((currency !== "IDR" && currency !== "USD") || !Number.isSafeInteger(shown.balance)) {
@@ -91,6 +105,7 @@ export async function recordPaymentAction(
 }
 
 export async function removePaymentAction(invoiceId: number, paymentId: number): Promise<FormState> {
+  await requireSession();
   if (!isId(invoiceId) || !isId(paymentId) || !repo.removePayment(invoiceId, paymentId)) {
     return { message: "This payment no longer exists." };
   }
@@ -99,6 +114,7 @@ export async function removePaymentAction(invoiceId: number, paymentId: number):
 }
 
 export async function revertToDraftAction(id: number): Promise<FormState> {
+  await requireSession();
   if (!isId(id)) return { message: GONE };
   const result = repo.revertToDraft(id);
   if (!result.ok) return { message: result.error };
@@ -107,6 +123,7 @@ export async function revertToDraftAction(id: number): Promise<FormState> {
 }
 
 export async function duplicateInvoiceAction(id: number): Promise<FormState> {
+  await requireSession();
   if (!isId(id)) return { message: GONE };
   const copyId = repo.duplicateInvoice(id, today());
   if (copyId === null) return { message: GONE };
@@ -115,6 +132,7 @@ export async function duplicateInvoiceAction(id: number): Promise<FormState> {
 }
 
 export async function deleteInvoiceAction(id: number): Promise<FormState> {
+  await requireSession();
   if (!isId(id) || !repo.deleteInvoice(id)) return { message: GONE };
   refresh();
   redirect("/invoices");

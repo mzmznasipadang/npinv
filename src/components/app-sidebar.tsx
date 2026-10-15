@@ -3,7 +3,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FileText, LayoutDashboard, LogOut, Settings, Users } from "lucide-react";
+import { FolderOpen, FileText, LayoutDashboard, LogOut, Settings, Users } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { logoutAction } from "@/lib/auth-actions";
 import {
@@ -20,6 +20,7 @@ import {
 
 const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/projects", label: "Projects", icon: FolderOpen },
   { href: "/invoices", label: "Invoices", icon: FileText },
   { href: "/clients", label: "Clients", icon: Users },
   { href: "/settings", label: "Settings", icon: Settings },

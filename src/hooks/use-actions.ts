@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import type { FormEvent } from "react";
+import { unstable_rethrow } from "next/navigation";
 import { toast } from "sonner";
 import type { FieldErrors, FormState } from "@/lib/schemas";
 
@@ -23,7 +24,15 @@ export function useServerForm<V extends object>(initial: V, submit: (values: V) 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
     startTransition(async () => {
-      const result = await submit(values);
+      let result: FormState;
+      try { result = await submit(values); }
+      catch (error) {
+        unstable_rethrow(error);
+        const message = "Could not save. Your changes are still here; try again.";
+        setState({ message });
+        toast.error(message);
+        return;
+      }
       if (!result) return; // the action redirected
       setState(result);
       if (result.message) toast.error(result.message);
@@ -40,7 +49,13 @@ export function useAction() {
 
   function run(action: () => Promise<FormState>, onOk?: () => void) {
     startTransition(async () => {
-      const result = await action();
+      let result: FormState;
+      try { result = await action(); }
+      catch (error) {
+        unstable_rethrow(error);
+        toast.error("Could not complete the action. Try again.");
+        return;
+      }
       if (!result) return; // the action redirected
       if (result.ok) onOk?.();
       else toast.error(result.message ?? Object.values(result.errors ?? {})[0] ?? "Something went wrong.");
