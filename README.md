@@ -3,7 +3,7 @@
 Studio dashboard for Naspad Studio: track client projects and task checklists, link invoices to projects, save branded A4 PDFs, and track what is outstanding, overdue and paid.
 
 - Design: `docs/superpowers/specs/2026-10-12-npinv-design.md`
-- Live (tailnet only): https://naspad-server.<tailnet>.ts.net:8445
+- Live: https://invoice.naspadstudio.id
 
 - Studio dashboard design: `docs/superpowers/specs/2026-10-15-studio-dashboard-design.md`
 - Local verification, migration rehearsal, and recovery: `docs/studio-dashboard-verification.md`
@@ -61,5 +61,6 @@ To restore a backup: stop the container, replace `data/npinv.db` with the snapsh
 The native app lives in the sibling `NPiOS` workspace. It uses the authenticated,
 read-only `/api/v1` API: [contract and rollout](docs/mobile-api.md).
 Device sessions expire after 30 days and can be revoked individually in Settings.
-Deploy the matching backend before connecting the app; business-data editing
-continues through this dashboard.
+The mobile API is deployed at the existing HTTPS dashboard address.
+[Deployment and rollback record](docs/deployments/2026-10-15-mobile-api.md).
+Business-data editing continues through this dashboard.

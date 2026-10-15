@@ -76,7 +76,8 @@ back the application leaves the extra table unused; restoring the complete
 pre-deploy backup also removes sessions created since that backup. Do not replace
 individual financial tables. Keep the backend behind the current HTTPS tailnet.
 
-The app and API were prepared locally. Nothing has been deployed to production.
+The API was deployed on 2026-10-15 at https://invoice.naspadstudio.id.
+See [deployment and rollback record](deployments/2026-10-15-mobile-api.md).
 
 ## Reproducible HTTP verification
 
