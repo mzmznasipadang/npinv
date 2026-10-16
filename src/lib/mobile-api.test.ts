@@ -230,3 +230,12 @@ test('Idempotency-Key replays a create once per session and never stores failure
   const keys = (getDb().prepare('SELECT key FROM idempotency_keys ORDER BY key').all() as {key:string}[]).map(row => row.key);
   assert.deepEqual(keys,['synthetic-key-0000000003'],'keys older than a day are purged');
 });
+test('the write table leaves paths outside it as they were', async () => {
+  const p = project(client('Studio'),'Design');
+  const t = projects.saveTask(p,null,{title:'Review',dueDate:'',completed:false});
+  for (const path of ['constructor','__proto__','clients',`clients/${p}`]) assert.equal((await api(path,'POST',{})).status,405,path);
+  for (const [path,method] of [[`tasks/${t}/extra`,'POST'],[`tasks/${t}/extra`,'GET'],[`tasks/${t}/a/b`,'PATCH']]) assert.equal((await api(path,method,method === 'GET' ? undefined : {})).status,404,`${method} ${path}`);
+  assert.equal((await api('tasks/abc','PATCH',{})).status,400);
+  assert.equal((await api(`invoices/${p}/print`,'POST')).status,405);
+  assert.equal((await api(`tasks/${t}`)).status,200);
+});
