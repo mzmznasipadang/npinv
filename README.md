@@ -59,8 +59,9 @@ To restore a backup: stop the container, replace `data/npinv.db` with the snapsh
 ## Native iOS companion
 
 The native app lives in the sibling `NPiOS` workspace. It uses the authenticated,
-read-only `/api/v1` API: [contract and rollout](docs/mobile-api.md).
+`/api/v1` API: [contract and rollout](docs/mobile-api.md). It reads everything and can
+create, edit and delete tasks; writes share the Server Actions' code.
 Device sessions expire after 30 days and can be revoked individually in Settings.
 The mobile API is deployed at the existing HTTPS dashboard address.
 [Deployment and rollback record](docs/deployments/2026-10-15-mobile-api.md).
-Business-data editing continues through this dashboard.
+All other editing, and business settings, continue through this dashboard.
