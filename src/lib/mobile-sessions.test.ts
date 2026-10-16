@@ -40,8 +40,19 @@ test('device session migration preserves all existing business records', () => {
   db.exec("INSERT INTO clients(name) VALUES ('Synthetic'); INSERT INTO projects(client_id,name) VALUES(1,'Project')");
   const before = db.prepare('SELECT * FROM projects').all();
   migrate(db); migrate(db);
-  assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 5);
+  assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 6);
   assert.deepEqual(db.prepare('SELECT * FROM projects').all(), before);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM device_sessions').get()!.n, 0);
   db.close();
+});
+test('write-scope migration keeps existing device sessions, read-only', () => {
+  const db = new DatabaseSync(':memory:'); migrate(db, 5);
+  db.exec("INSERT INTO device_sessions(token_hash,credential_binding,device_name,created_at,expires_at) VALUES('h','b','Phone',1,2)");
+  migrate(db);
+  assert.deepEqual({...db.prepare('SELECT device_name AS name, scope FROM device_sessions').get()}, {name:'Phone', scope:'read'});
+  db.close();
+});
+test('new device sessions can write', () => {
+  assert.equal(createDeviceSession('Phone', NOW).scope, 'write');
+  assert.equal(verifyDeviceSession(createDeviceSession('Tablet', NOW).token, NOW)?.scope, 'write');
 });

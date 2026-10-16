@@ -15,7 +15,7 @@ export function readClients(filter:{q?:string},page:number,pageSize:number) {
   return pageOf(data,total,page,pageSize);
 }
 export type TaskFilter = {q?:string;projectId?:number;clientId?:number;completed?:boolean;archived?:boolean;dueFrom?:string;dueTo?:string;attention?:'due'};
-const TASK_COLS = 't.id,t.project_id AS projectId,t.title,t.completed,t.due_date AS dueDate,p.name AS projectName';
+const TASK_COLS = 't.id,t.project_id AS projectId,t.title,t.completed,t.due_date AS dueDate,p.name AS projectName,t.updated_at AS updatedAt';
 export function readTasks(filter:TaskFilter,page:number,pageSize:number,todayDate:string) {
   const where:string[] = filter.archived ? [] : ['p.archived_at IS NULL']; const args:Arg[]=[];
   if(filter.attention === 'due') {where.push("p.status != 'completed' AND t.completed = 0 AND t.due_date <= ?");args.push(addDays(todayDate,7));}

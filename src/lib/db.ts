@@ -136,7 +136,21 @@ CREATE TABLE device_sessions (
   revoked_at INTEGER
 );
 `;
-const STEPS = [SCHEMA, DISCOUNT, PAYMENTS, PROJECTS, DEVICE_SESSIONS];
+// Version 6: mobile writes. Existing device sessions stay read-only; new sign-ins get 'write'.
+// Idempotency keys let the app retry a create without making it twice.
+const MOBILE_WRITES = `
+ALTER TABLE device_sessions ADD COLUMN scope TEXT NOT NULL DEFAULT 'read' CHECK (scope IN ('read', 'write'));
+CREATE TABLE idempotency_keys (
+  session_id INTEGER NOT NULL,
+  key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  status INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, key)
+);
+`;
+const STEPS = [SCHEMA, DISCOUNT, PAYMENTS, PROJECTS, DEVICE_SESSIONS, MOBILE_WRITES];
 
 /** Brings the database up to `target`, the latest version by default. */
 export function migrate(db: DatabaseSync, target = STEPS.length): void {
@@ -172,6 +186,8 @@ export function getDb(): DatabaseSync {
 
 export function transaction<T>(fn: () => T): T {
   const db = getDb();
+  // Inside another transaction, join it, so a caller can group writers that each open their own.
+  if (db.isTransaction) return fn();
   db.exec("BEGIN IMMEDIATE");
   try {
     const result = fn();

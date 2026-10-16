@@ -25,7 +25,7 @@ test("upgrading from version 2 turns each paid invoice into one full payment and
 
   migrate(db);
 
-  assert.equal(version(db), 5);
+  assert.equal(version(db), 6);
   assert.deepEqual(rows(db, "SELECT invoice_id AS invoiceId, paid_on AS paidOn, amount, kind, note FROM payments"), [
     { invoiceId: 1, paidOn: "2026-10-05", amount: 1_000_000, kind: "payment", note: "" },
   ]);
@@ -53,7 +53,7 @@ test("migrating an up-to-date database changes nothing", () => {
   const db = new DatabaseSync(":memory:");
   migrate(db);
   migrate(db);
-  assert.equal(version(db), 5);
+  assert.equal(version(db), 6);
 });
 
 test("a step that fails leaves the database at its old version", () => {
@@ -80,7 +80,7 @@ test("studio migration preserves all legacy financial data and gives every invoi
   const tables = ['invoices', 'invoice_items', 'payments', 'clients', 'settings'];
   const before = tables.map(t => rows(db, `SELECT * FROM ${t} ORDER BY id`));
   migrate(db);
-  assert.equal(version(db), 5);
+  assert.equal(version(db), 6);
   for (const [i, table] of tables.entries()) {
     const after = rows(db, `SELECT * FROM ${table} ORDER BY id`).map(row => {
       const copy = { ...row };
@@ -91,7 +91,7 @@ test("studio migration preserves all legacy financial data and gives every invoi
   }
   assert.deepEqual(rows(db, 'PRAGMA foreign_key_check'), []);
   migrate(db);
-  assert.equal(version(db), 5);
+  assert.equal(version(db), 6);
   db.close();
 });
 
@@ -141,7 +141,7 @@ test('a synthetic file database migrates and can be recovered from its pre-migra
     const before = rows(db,'SELECT * FROM payments');
     db.exec(`VACUUM INTO '${backup.replace(/'/g,"''")}'`);
     migrate(db);
-    assert.equal(version(db),5);
+    assert.equal(version(db),6);
     assert.equal(rows(db,'SELECT project_id FROM invoices')[0].project_id,null);
     assert.deepEqual(rows(db,'SELECT * FROM payments'),before);
     assert.deepEqual(rows(db,'PRAGMA foreign_key_check'),[]);
