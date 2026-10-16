@@ -51,12 +51,25 @@ try {
   }
   const detail=await (await fetch(base+`/api/v1/invoices/${invoice}`,{headers})).json();
   assert.equal(detail.data.balance,7500); assert.equal(detail.data.paid,2500); assert.ok(Number.isInteger(detail.data.items[0].id));
+  const writing={...headers,'content-type':'application/json'};
+  const fields={clientId:String(client),name:'Smoke project',description:'',status:'planned',startDate:'',deadline:''};
+  const createProject=()=>fetch(base+'/api/v1/projects',{method:'POST',headers:{...writing,'idempotency-key':'synthetic-smoke-key-0001'},body:JSON.stringify(fields)});
+  const created=await createProject(); assert.equal(created.status,201); const made=(await created.json()).data;
+  const replay=await createProject(); assert.equal(replay.status,201); assert.equal(replay.headers.get('idempotent-replayed'),'true');
+  assert.equal((await replay.json()).data.id,made.id);
+  const edit=updatedAt=>fetch(base+`/api/v1/projects/${made.id}`,{method:'PATCH',headers:writing,body:JSON.stringify({...fields,name:'Smoke project v2',updatedAt})});
+  assert.equal((await edit(made.updatedAt)).status,200);
+  assert.equal((await edit(made.updatedAt)).status,409);
+  const action=(name,method='POST')=>fetch(base+`/api/v1/projects/${made.id}/${name}`,{method,headers});
+  const archived=await action('archive'); assert.equal(archived.status,200); assert.ok((await archived.json()).data.archivedAt);
+  const restored=await action('restore'); assert.equal(restored.status,200); assert.equal((await restored.json()).data.archivedAt,null);
+  assert.equal((await action('archive','GET')).status,405);
   const settings=await fetch(base+'/settings',{headers:{cookie:`npinv_session=${createSession()}`}});
   assert.equal(settings.status,200); const html=await settings.text();
   assert.ok(html.includes('Synthetic phone')); assert.ok(html.includes('Mobile devices')); assert.ok(!html.includes(credential.token));
   assert.equal((await fetch(base+`/api/v1/sessions/${credential.id}`,{method:'DELETE',headers})).status,200);
   assert.equal((await fetch(base+'/api/v1/clients',{headers})).status,401);
-  console.log('Mobile HTTP smoke passed: auth, five reads, strict raw queries, balances, web device list, and revocation.');
+  console.log('Mobile HTTP smoke passed: auth, five reads, strict raw queries, balances, project writes (create, replay, edit, conflict, archive, restore, 405), web device list, and revocation.');
 } finally {
   if(server.exitCode===null) server.kill('SIGTERM');
   await stopped;

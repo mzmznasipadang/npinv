@@ -5,7 +5,7 @@ import * as repo from './repo.ts';
 import * as projects from './projects.ts';
 import { createDeviceSession } from './mobile-sessions.ts';
 import { handleMobileRequest } from './mobile-api.ts';
-import { parseTaskForm } from './project-schemas.ts';
+import { parseProjectForm, parseTaskForm } from './project-schemas.ts';
 const NOW = Date.UTC(2026,9,15,3); const TODAY = '2026-10-15';
 let token: string;
 beforeEach(() => {
@@ -229,4 +229,116 @@ test('Idempotency-Key replays a create once per session and never stores failure
   assert.equal((await create(body,'synthetic-key-0000000003',token,later)).status,201);
   const keys = (getDb().prepare('SELECT key FROM idempotency_keys ORDER BY key').all() as {key:string}[]).map(row => row.key);
   assert.deepEqual(keys,['synthetic-key-0000000003'],'keys older than a day are purged');
+});
+test('the write table leaves paths outside it as they were', async () => {
+  const p = project(client('Studio'),'Design');
+  const t = projects.saveTask(p,null,{title:'Review',dueDate:'',completed:false});
+  for (const path of ['constructor','__proto__','clients',`clients/${p}`]) assert.equal((await api(path,'POST',{})).status,405,path);
+  for (const [path,method] of [[`tasks/${t}/extra`,'POST'],[`tasks/${t}/extra`,'GET'],[`tasks/${t}/a/b`,'PATCH']]) assert.equal((await api(path,method,method === 'GET' ? undefined : {})).status,404,`${method} ${path}`);
+  assert.equal((await api('tasks/abc','PATCH',{})).status,400);
+  assert.equal((await api(`invoices/${p}/print`,'POST')).status,405);
+  assert.equal((await api(`tasks/${t}`)).status,200);
+});
+
+const projectBody = (clientId: number | string, overrides: Record<string, unknown> = {}) =>
+  ({clientId:String(clientId),name:'Brand refresh',description:'',status:'planned',startDate:'',deadline:'',...overrides});
+const createProject = (body: unknown, key: string | null = KEY, credential: string | null = token) =>
+  api('projects','POST',body,credential,key === null ? {} : {'idempotency-key':key});
+const projectCount = () => (getDb().prepare('SELECT COUNT(*) AS n FROM projects').get() as {n:number}).n;
+const invoiceFor = (clientId: number, projectId: number) => repo.saveInvoice(null,{clientId,projectId,billToName:'Synthetic',billToCompany:'',billToAddress:'',issueDate:'2026-10-01',dueDate:'2026-10-31',currency:'USD',taxRateBp:0,discountType:'amount',discountValue:0,downPaymentType:'amount',downPaymentValue:0,notes:'',items:[{description:'Design',qty:1,unitPrice:10000,notes:''}]});
+
+test('project writes need a write-scope session, and other methods on their paths get 405', async () => {
+  const c = client('Studio'); const p = project(c,'Design');
+  const edit = {...projectBody(c),updatedAt:(await api(`projects/${p}`)).body.data.updatedAt};
+  const routes = [['projects','POST',projectBody(c)],[`projects/${p}`,'PATCH',edit],[`projects/${p}/archive`,'POST',undefined],[`projects/${p}/restore`,'POST',undefined]] as const;
+  for (const [path,method,body] of routes) assert.equal((await api(path,method,body,null)).status,401,`${method} ${path}`);
+  const read = createDeviceSession('Old phone', NOW).token;
+  getDb().prepare("UPDATE device_sessions SET scope = 'read' WHERE device_name = 'Old phone'").run();
+  for (const [path,method,body] of routes) assert.equal((await api(path,method,body,read,{'idempotency-key':KEY})).status,403,`${method} ${path}`);
+  assert.equal(projectCount(),1); assert.equal((await api(`projects/${p}`)).body.data.archivedAt,null);
+  for (const [path,method] of [[`projects/${p}/archive`,'GET'],[`projects/${p}/restore`,'GET'],[`projects/${p}`,'DELETE'],['projects','PUT'],[`projects/${p}`,'POST'],[`projects/${p}/archive`,'PATCH']]) {
+    assert.equal((await api(path,method)).status,405,`${method} ${path}`);
+  }
+  for (const path of [`projects/${p}/unknown`,`projects/${p}/archive/extra`]) assert.equal((await api(path,'POST')).status,404,path);
+  assert.equal((await api('projects/abc/archive','POST')).status,400);
+  assert.equal((await api(`projects/${p}/archive?x=1`,'POST')).status,400);
+  assert.equal((await api(`projects/${p}`)).status,200);
+});
+test('project creates use strict string bodies, the shared parser, and the writer conflicts', async () => {
+  const c = client('Studio');
+  const valid = projectBody(c,{name:'  Brand refresh  ',startDate:'2026-10-20'});
+  for (const [label,body] of [['unknown key',{...valid,notes:''}],['missing key',{...valid,deadline:undefined}],['numeric clientId',{...valid,clientId:c}],['null date',{...valid,deadline:null}]] as const) {
+    assert.equal((await createProject(body)).status,400,label);
+  }
+  assert.equal((await api('projects?x=1','POST',valid,token,{'idempotency-key':KEY})).status,400,'query string');
+  assert.equal((await createProject(valid,null)).status,400,'missing key');
+  assert.equal((await createProject({...valid,description:'x'.repeat(9000)})).status,413);
+  for (const values of [projectBody(c,{name:'   '}),projectBody(c,{clientId:''}),projectBody(c,{status:'bad'}),projectBody(c,{startDate:'2026-10-20',deadline:'2026-10-10'})]) {
+    const invalid = await createProject(values); const shared = parseProjectForm(values);
+    assert.equal(invalid.status,422); assert.ok(!shared.ok); assert.deepEqual(invalid.body.errors,shared.errors);
+  }
+  assert.deepEqual((await createProject(projectBody(c,{startDate:'2026-10-20',deadline:'2026-10-10'}))).body.errors,{deadline:'The deadline cannot be before the start date'});
+  const missing = await createProject(projectBody(999999));
+  assert.equal(missing.status,422); assert.deepEqual(missing.body.errors,{clientId:'Choose an existing client.'});
+  assert.equal(projectCount(),0);
+  const created = await createProject(valid);
+  assert.equal(created.status,201);
+  assert.equal(created.body.data.name,'Brand refresh'); assert.equal(created.body.data.startDate,'2026-10-20'); assert.equal(created.body.data.deadline,null);
+  assert.deepEqual((await api(`projects/${created.body.data.id}`)).body.data,created.body.data);
+  const largest = await createProject(projectBody(c,{name:'€'.repeat(200),description:'€'.repeat(2000)}),'synthetic-key-0000000009');
+  assert.equal(largest.status,201,'the largest valid project fits under 8 KB');
+});
+test('project edits check updatedAt before the fields, then the shared parser and conflicts', async () => {
+  const c = client('Studio'); const p = project(c,'Design');
+  const edit = (updatedAt: string, overrides: Record<string, string> = {}) => ({...projectBody(c,{name:'Design',status:'in_progress',deadline:TODAY}),updatedAt,...overrides});
+  assert.equal((await api(`projects/${p}`,'PATCH',projectBody(c))).status,400,'updatedAt is required');
+  const V1 = '2026-10-15 04:00:00.000';
+  getDb().prepare("UPDATE projects SET name = 'Renamed on the web', updated_at = ? WHERE id = ?").run(V1,p);
+  const stale = await api(`projects/${p}`,'PATCH',edit('2026-10-15 03:00:00.000',{name:''}));
+  assert.equal(stale.status,409,'the version is checked before the fields');
+  assert.equal(stale.body.message,'This project changed elsewhere. Reload to see the latest version.');
+  assert.equal((await api(`projects/${p}`)).body.data.name,'Renamed on the web');
+  const invalid = await api(`projects/${p}`,'PATCH',edit(V1,{name:''}));
+  assert.equal(invalid.status,422); assert.equal(invalid.body.errors.name,'Enter a project name');
+  const saved = await api(`projects/${p}`,'PATCH',edit(V1,{name:'Design v2',deadline:''}));
+  assert.equal(saved.status,200); assert.equal(saved.body.data.name,'Design v2');
+  assert.equal(saved.body.data.deadline,null,'turning a date off clears it'); assert.notEqual(saved.body.data.updatedAt,V1);
+  // A task write stamps the project, so a form opened before it is stale.
+  const V2 = '2026-10-15 05:00:00.000';
+  getDb().prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run(V2,p);
+  projects.saveTask(p,null,{title:'Review',dueDate:null,completed:false});
+  assert.equal((await api(`projects/${p}`,'PATCH',edit(V2))).status,409);
+  invoiceFor(c,p);
+  const moved = await api(`projects/${p}`,'PATCH',edit((await api(`projects/${p}`)).body.data.updatedAt,{clientId:String(client('Other'))}));
+  assert.equal(moved.status,422); assert.deepEqual(moved.body.errors,{clientId:'The client cannot change while invoices are linked.'});
+  assert.equal((await api(`projects/${p}`)).body.data.clientId,c);
+  projects.setProjectArchived(p,true);
+  const archived = (await api(`projects/${p}`)).body.data;
+  const kept = await api(`projects/${p}`,'PATCH',edit(archived.updatedAt,{name:'Archived edit'}));
+  assert.equal(kept.status,200); assert.equal(kept.body.data.archivedAt,archived.archivedAt,'an edit keeps the project archived');
+  assert.equal((await api('projects/999999','PATCH',edit('x'))).status,404);
+});
+test('archive and restore return the project, need no key or body, and report missing projects', async () => {
+  const c = client('Studio'); const p = project(c,'Design');
+  getDb().prepare("UPDATE projects SET updated_at = '2026-10-15 04:00:00.000' WHERE id = ?").run(p);
+  const archived = await api(`projects/${p}/archive`,'POST');
+  assert.equal(archived.status,200); assert.ok(archived.body.data.archivedAt);
+  assert.notEqual(archived.body.data.updatedAt,'2026-10-15 04:00:00.000','archiving changes the version');
+  assert.deepEqual((await api(`projects/${p}`)).body.data,archived.body.data);
+  assert.equal((await api('projects')).body.pagination.total,0);
+  assert.equal((await api('projects?archived=true')).body.data[0].id,p);
+  const restored = await api(`projects/${p}/restore`,'POST');
+  assert.equal(restored.status,200); assert.equal(restored.body.data.archivedAt,null);
+  assert.equal((await api('projects')).body.pagination.total,1);
+  for (const action of ['archive','restore']) assert.equal((await api(`projects/999999/${action}`,'POST')).status,404,action);
+  assert.equal((getDb().prepare('SELECT COUNT(*) AS n FROM idempotency_keys').get() as {n:number}).n,0,'actions store no key');
+});
+test('project creates replay once per key, and a key is bound to its resource', async () => {
+  const body = projectBody(client('Studio'));
+  const first = await createProject(body); const again = await createProject(body);
+  assert.equal(again.status,201); assert.equal(again.headers.get('idempotent-replayed'),'true');
+  assert.deepEqual(again.body,first.body); assert.equal(projectCount(),1);
+  assert.equal((await createProject({...body,name:'Something else'})).status,422); assert.equal(projectCount(),1);
+  const task = {projectId:first.body.data.id,title:'Review',dueDate:'',completed:false};
+  assert.equal((await api('tasks','POST',task,token,{'idempotency-key':KEY})).status,422);
 });
