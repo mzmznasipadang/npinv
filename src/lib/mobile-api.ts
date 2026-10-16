@@ -29,11 +29,14 @@ const filters = {
 // Write bodies check only shape. The values are the web form's own, so the shared write function validates them.
 const taskValues = {title:z.string(),dueDate:z.string(),completed:z.boolean()};
 const projectValues = {clientId:z.string(),name:z.string(),description:z.string(),status:z.string(),startDate:z.string(),deadline:z.string()};
+const clientValues = {name:z.string(),company:z.string(),address:z.string(),email:z.string(),phone:z.string()};
 const bodies = {
   createTask:z.object({projectId:z.int().positive(),...taskValues}).strict(),
   editTask:z.object({...taskValues,updatedAt:z.string().max(40)}).strict(),
   createProject:z.object(projectValues).strict(),
   editProject:z.object({...projectValues,updatedAt:z.string().max(40)}).strict(),
+  createClient:z.object(clientValues).strict(),
+  editClient:z.object({...clientValues,updatedAt:z.string().max(40)}).strict(),
 };
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,100}$/;
 const KEY_HOURS = 24;
@@ -119,6 +122,26 @@ const writeRoutes=new Map<string,Partial<Record<string,WriteRoute>>>([
   // Archive and restore check no version, as on the web: each one is undone by the other.
   ['projects/:id/archive',{POST:route({},id=>{projects.setProjectArchived(id,true);return {data:projects.getProject(id)};})}],
   ['projects/:id/restore',{POST:route({},id=>{projects.setProjectArchived(id,false);return {data:projects.getProject(id)};})}],
+  ['clients',{POST:route({key:true,body:bodies.createClient},(_,values)=>{
+    const result=writes.saveClient(null,values);
+    return result.ok ? {data:readClient(result.id)} : invalid(result.errors);
+  })}],
+  ['clients/:id',{
+    PATCH:route({body:bodies.editClient},(id,{updatedAt,...values})=>{
+      const client=readClient(id) as {updatedAt:string}|null;
+      if(!client) throw new HTTPError(404,'Client no longer exists.');
+      if(client.updatedAt!==updatedAt) throw new HTTPError(409,'This client changed elsewhere. Reload to see the latest version.');
+      const result=writes.saveClient(id,values);
+      return result.ok ? {data:readClient(id)} : invalid(result.errors);
+    }),
+    DELETE:route({},id=>{
+      let deleted:boolean;
+      // The refusal carries no errors, so the app shows the writer's sentence rather than "Check the highlighted fields."
+      try {deleted=repo.deleteClient(id);} catch(error) {if(error instanceof repo.ProjectConflictError) throw new HTTPError(422,error.message);throw error;}
+      if(!deleted) throw new HTTPError(404,'Client no longer exists.');
+      return {ok:true};
+    }),
+  }],
 ]);
 // The app renders this document offline, so it may load nothing: images and fonts arrive inline and scripts never run.
 const PRINT_CSP="default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'";
