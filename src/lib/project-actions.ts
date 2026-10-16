@@ -4,7 +4,6 @@ import { redirect } from 'next/navigation';
 import { requireSession } from './session';
 import { NotFoundError, ProjectConflictError } from './repo';
 import * as projects from './projects';
-import { parseProjectForm } from './project-schemas';
 import type { ProjectFormValues, TaskFormValues } from './project-schemas';
 import * as writes from './writes';
 import type { FormState } from './schemas';
@@ -17,12 +16,11 @@ function failure(error: unknown): FormState {
 export async function saveProjectAction(id: number | null, values: ProjectFormValues): Promise<FormState> {
   await requireSession();
   if (id !== null && !isId(id)) return {message:'Project no longer exists.'};
-  const parsed = parseProjectForm(values);
-  if (!parsed.ok) return {errors:parsed.errors};
-  let saved: number;
-  try { saved = projects.saveProject(id, parsed.data); } catch (error) { return failure(error); }
+  let result: ReturnType<typeof writes.saveProject>;
+  try { result = writes.saveProject(id, values); } catch (error) { return failure(error); }
+  if (!result.ok) return {errors:result.errors};
   revalidatePath('/', 'layout');
-  if (id === null) redirect(`/projects/${saved}`);
+  if (id === null) redirect(`/projects/${result.id}`);
   return {ok:true};
 }
 export async function archiveProjectAction(id: number, archived: boolean): Promise<FormState> {
