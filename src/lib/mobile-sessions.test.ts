@@ -40,7 +40,7 @@ test('device session migration preserves all existing business records', () => {
   db.exec("INSERT INTO clients(name) VALUES ('Synthetic'); INSERT INTO projects(client_id,name) VALUES(1,'Project')");
   const before = db.prepare('SELECT * FROM projects').all();
   migrate(db); migrate(db);
-  assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 6);
+  assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 7);
   assert.deepEqual(db.prepare('SELECT * FROM projects').all(), before);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM device_sessions').get()!.n, 0);
   db.close();

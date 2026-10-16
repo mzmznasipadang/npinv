@@ -150,7 +150,15 @@ CREATE TABLE idempotency_keys (
   PRIMARY KEY (session_id, key)
 );
 `;
-const STEPS = [SCHEMA, DISCOUNT, PAYMENTS, PROJECTS, DEVICE_SESSIONS, MOBILE_WRITES];
+// Version 7: clients get the version an edit sends back. ADD COLUMN rejects a non-constant default, so backfill instead.
+const CLIENT_VERSIONS = `
+ALTER TABLE clients ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';
+UPDATE clients SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now');
+`;
+const STEPS = [SCHEMA, DISCOUNT, PAYMENTS, PROJECTS, DEVICE_SESSIONS, MOBILE_WRITES, CLIENT_VERSIONS];
+
+/** A millisecond timestamp, as SQL to interpolate into a statement (not a bound value), for record versions. */
+export const STAMP = "strftime('%Y-%m-%d %H:%M:%f', 'now')";
 
 /** Brings the database up to `target`, the latest version by default. */
 export function migrate(db: DatabaseSync, target = STEPS.length): void {

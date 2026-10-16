@@ -1,4 +1,4 @@
-import { getDb, transaction } from './db.ts';
+import { getDb, STAMP, transaction } from './db.ts';
 import { NotFoundError, ProjectConflictError } from './repo.ts';
 import { addDays } from './rules.ts';
 
@@ -13,7 +13,6 @@ const COLS = `p.id, p.client_id AS clientId, c.name AS clientName, p.name, p.des
  p.start_date AS startDate, p.deadline, p.archived_at AS archivedAt, p.updated_at AS updatedAt,
  (SELECT COUNT(*) FROM tasks WHERE project_id = p.id) AS taskCount,
  (SELECT COUNT(*) FROM tasks WHERE project_id = p.id AND completed = 1) AS completedTaskCount`;
-const STAMP = "strftime('%Y-%m-%d %H:%M:%f', 'now')";
 type Arg = string | number | null;
 
 function projectQuery(filter: ProjectFilter, todayDate: string): { clause: string; args: Arg[] } {

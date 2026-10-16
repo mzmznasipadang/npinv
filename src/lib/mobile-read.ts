@@ -11,7 +11,7 @@ export function readClients(filter:{q?:string},page:number,pageSize:number) {
   const clause = filter.q ? "WHERE name LIKE ? ESCAPE '\\' OR company LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\'" : '';
   const args:Arg[] = filter.q ? Array(4).fill(like(filter.q)) : [];
   const total = getDb().prepare(`SELECT COUNT(*) AS total FROM clients ${clause}`).get(...args)!.total as number;
-  const data = getDb().prepare(`SELECT id,name,company,address,email,phone FROM clients ${clause} ORDER BY name COLLATE NOCASE, id LIMIT ? OFFSET ?`).all(...args,pageSize,(page-1)*pageSize);
+  const data = getDb().prepare(`SELECT id,name,company,address,email,phone,updated_at AS updatedAt FROM clients ${clause} ORDER BY name COLLATE NOCASE, id LIMIT ? OFFSET ?`).all(...args,pageSize,(page-1)*pageSize);
   return pageOf(data,total,page,pageSize);
 }
 export type TaskFilter = {q?:string;projectId?:number;clientId?:number;completed?:boolean;archived?:boolean;dueFrom?:string;dueTo?:string;attention?:'due'};
@@ -35,5 +35,5 @@ export function readTask(id:number) {
   return row ? {...row,completed:Boolean(row.completed)} : null;
 }
 export function readClient(id:number) {
-  return getDb().prepare('SELECT id,name,company,address,email,phone FROM clients WHERE id = ?').get(id) ?? null;
+  return getDb().prepare('SELECT id,name,company,address,email,phone,updated_at AS updatedAt FROM clients WHERE id = ?').get(id) ?? null;
 }
