@@ -2,7 +2,8 @@
 
 All paths start with `/api/v1`. The iOS app uses the same SQLite file and financial
 repository functions as the dashboard. Business-data routes are read-only except
-tasks, which the app can also create, edit and delete (see "Writes"). Device
+tasks, which the app can also create, edit and delete, and projects, which it can
+also create, edit, archive and restore (see "Writes"). Device
 sessions use schema migrations 5 and 6; existing invoices, projects, tasks,
 clients, and web authentication remain intact.
 
@@ -104,21 +105,35 @@ dashboard, like the Server Actions do.
 | `POST /tasks` with `Idempotency-Key` | `{ projectId, title, dueDate, completed }` | 201 `{ data: task }` |
 | `PATCH /tasks/:id` | `{ title, dueDate, completed, updatedAt }` | 200 `{ data: task }` |
 | `DELETE /tasks/:id` | none | 200 `{ ok: true }` |
+| `POST /projects` with `Idempotency-Key` | `{ clientId, name, description, status, startDate, deadline }` | 201 `{ data: project }` |
+| `PATCH /projects/:id` | the same fields plus `updatedAt` | 200 `{ data: project }` |
+| `POST /projects/:id/archive` | none | 200 `{ data: project }` |
+| `POST /projects/:id/restore` | none | 200 `{ data: project }` |
+
+- **Actions.** `POST /resource/:id/<action>` runs one named state change the web offers
+  as its own button, and returns `200 { data }` with the record in its read shape. It needs
+  no `Idempotency-Key` unless it creates a record. GET and other methods on an action
+  path return 405.
 
 - **Body.** JSON, at most 8 KiB, with exactly these keys and types; no query string.
-  Values use the web form's shapes: `dueDate` is `""` for no date. Anything else is 400.
+  Values use the web form's shapes: dates are `""` for no date, and every project field
+  is a string (`clientId` is a decimal string such as `"12"`). Anything else is 400.
 - **Validation.** 422 `{ message, errors: { field: message } }`, with the messages
-  `parseTaskForm` gives the web form.
+  `parseTaskForm` and `parseProjectForm` give the web forms. A missing client, or a
+  client change on a project with linked invoices, is also 422 on `clientId`.
 - **Conflicts.** `updatedAt` is the value the app last read (tasks now include it).
   If the task has changed since, the PATCH writes nothing and returns 409. A PATCH
   never moves a task to another project. DELETE has no version check, like the web's Remove.
+  A project's `updatedAt` also changes when one of its tasks is saved or deleted, and when
+  it is archived or restored, so a project form opened before any of those gets 409.
+  Archive and restore have no version check, like the web's buttons.
 - **Retries.** `Idempotency-Key` (16 to 100 letters, digits, `-` or `_`) is required on
   creates. A repeat of the same request with the same key, from the same session, returns
   the stored response with `Idempotent-Replayed: true` instead of creating again. The same
   key with a different request is 422. Only successes are stored, for 24 hours.
 - **Other statuses.** 401 without a valid session, 403 for a `read` session, 404 when the
-  task or its project is gone, 405 for other methods. Other resources still return 405
-  to writes.
+  task or project is gone, 405 for other methods. Projects can't be deleted. Other
+  resources still return 405 to writes.
 
 ## Rollout
 
