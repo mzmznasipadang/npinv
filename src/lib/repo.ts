@@ -1,4 +1,4 @@
-import { getDb, transaction } from "./db.ts";
+import { getDb, STAMP, transaction } from "./db.ts";
 import { formatMoney, invoiceTotals } from "./money.ts";
 import type { Currency, Portion } from "./money.ts";
 import { addDays, displayStatus, formatNumber, nextSequence } from "./rules.ts";
@@ -150,7 +150,7 @@ export function listClients(): Client[] {
 
 export function createClient(input: ClientInput): number {
   return run(
-    "INSERT INTO clients (name, company, address, email, phone) VALUES (?, ?, ?, ?, ?)",
+    `INSERT INTO clients (name, company, address, email, phone, updated_at) VALUES (?, ?, ?, ?, ?, ${STAMP})`,
     input.name, input.company, input.address, input.email, input.phone,
   ).id;
 }
@@ -158,7 +158,7 @@ export function createClient(input: ClientInput): number {
 export function updateClient(id: number, input: ClientInput): boolean {
   return (
     run(
-      "UPDATE clients SET name = ?, company = ?, address = ?, email = ?, phone = ? WHERE id = ?",
+      `UPDATE clients SET name = ?, company = ?, address = ?, email = ?, phone = ?, updated_at = ${STAMP} WHERE id = ?`,
       input.name, input.company, input.address, input.email, input.phone, id,
     ).changes > 0
   );

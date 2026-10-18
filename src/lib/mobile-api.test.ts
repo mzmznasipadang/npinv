@@ -6,6 +6,7 @@ import * as projects from './projects.ts';
 import { createDeviceSession } from './mobile-sessions.ts';
 import { handleMobileRequest } from './mobile-api.ts';
 import { parseProjectForm, parseTaskForm } from './project-schemas.ts';
+import { parseClientForm } from './schemas.ts';
 const NOW = Date.UTC(2026,9,15,3); const TODAY = '2026-10-15';
 let token: string;
 beforeEach(() => {
@@ -28,7 +29,7 @@ test('all reads and session revocations require device authorization, not a web 
     assert.equal((await api(route,'GET',undefined,null)).status,401);
   }
   assert.equal((await api('sessions/1','DELETE',undefined,null)).status,401);
-  assert.equal((await api('clients','POST',{})).status,405);
+  assert.equal((await api('invoices','POST',{})).status,405);
   const response = await handleMobileRequest(new Request('https://example.test/api/v1/clients',{headers:{cookie:'npinv_session=anything'}}),NOW);
   assert.equal(response.status,401);
 });
@@ -161,7 +162,7 @@ test('writes need a write-scope device session; read sessions get 403 and other 
   assert.equal((await api(`tasks/${t}`,'DELETE',undefined,read)).status,403);
   assert.equal((await api('tasks','GET',undefined,read)).status,200);
   assert.equal(taskCount(),1);
-  assert.equal((await api('clients','POST',{})).status,405);
+  assert.equal((await api('invoices','POST',{})).status,405);
   assert.equal((await api('tasks','PUT',{})).status,405);
   assert.equal((await api(`tasks/${t}`,'POST',{})).status,405);
   const login = await api('sessions','POST',{password:process.env.ADMIN_PASSWORD,deviceName:'New phone'},null);
@@ -233,7 +234,7 @@ test('Idempotency-Key replays a create once per session and never stores failure
 test('the write table leaves paths outside it as they were', async () => {
   const p = project(client('Studio'),'Design');
   const t = projects.saveTask(p,null,{title:'Review',dueDate:'',completed:false});
-  for (const path of ['constructor','__proto__','clients',`clients/${p}`]) assert.equal((await api(path,'POST',{})).status,405,path);
+  for (const path of ['constructor','__proto__','invoices',`clients/${p}`]) assert.equal((await api(path,'POST',{})).status,405,path);
   for (const [path,method] of [[`tasks/${t}/extra`,'POST'],[`tasks/${t}/extra`,'GET'],[`tasks/${t}/a/b`,'PATCH']]) assert.equal((await api(path,method,method === 'GET' ? undefined : {})).status,404,`${method} ${path}`);
   assert.equal((await api('tasks/abc','PATCH',{})).status,400);
   assert.equal((await api(`invoices/${p}/print`,'POST')).status,405);
@@ -341,4 +342,84 @@ test('project creates replay once per key, and a key is bound to its resource', 
   assert.equal((await createProject({...body,name:'Something else'})).status,422); assert.equal(projectCount(),1);
   const task = {projectId:first.body.data.id,title:'Review',dueDate:'',completed:false};
   assert.equal((await api('tasks','POST',task,token,{'idempotency-key':KEY})).status,422);
+});
+const clientBody = (overrides: Record<string, unknown> = {}) => ({name:'Studio',company:'',address:'',email:'',phone:'',...overrides});
+const createClient = (body: unknown, key: string | null = KEY, credential: string | null = token) =>
+  api('clients','POST',body,credential,key === null ? {} : {'idempotency-key':key});
+const clientCount = () => (getDb().prepare('SELECT COUNT(*) AS n FROM clients').get() as {n:number}).n;
+const REFUSAL = 'This client has projects. Keep the client to preserve their project history.';
+
+test('client writes need a write-scope session, and other methods on their paths get 405', async () => {
+  const c = client('Studio');
+  const edit = {...clientBody(),updatedAt:(await api(`clients/${c}`)).body.data.updatedAt};
+  const routes = [['clients','POST',clientBody()],[`clients/${c}`,'PATCH',edit],[`clients/${c}`,'DELETE',undefined]] as const;
+  for (const [path,method,body] of routes) assert.equal((await api(path,method,body,null)).status,401,`${method} ${path}`);
+  const read = createDeviceSession('Old phone', NOW).token;
+  getDb().prepare("UPDATE device_sessions SET scope = 'read' WHERE device_name = 'Old phone'").run();
+  for (const [path,method,body] of routes) assert.equal((await api(path,method,body,read,{'idempotency-key':KEY})).status,403,`${method} ${path}`);
+  assert.equal(clientCount(),1);
+  for (const [path,method] of [['clients','PUT'],['clients','DELETE'],[`clients/${c}`,'POST']]) assert.equal((await api(path,method,{})).status,405,`${method} ${path}`);
+  assert.equal((await api('clients/abc','PATCH',edit)).status,400);
+});
+test('client creates use strict string bodies and the shared parser', async () => {
+  const valid = clientBody({name:'  Studio  '});
+  for (const [label,body] of [['unknown key',{...valid,notes:''}],['missing key',{...valid,phone:undefined}],['numeric phone',{...valid,phone:5}],['null email',{...valid,email:null}]] as const) {
+    assert.equal((await createClient(body)).status,400,label);
+  }
+  assert.equal((await api('clients?x=1','POST',valid,token,{'idempotency-key':KEY})).status,400,'query string');
+  assert.equal((await createClient(valid,null)).status,400,'missing key');
+  assert.equal((await createClient({...valid,address:'x'.repeat(9000)})).status,413);
+  for (const values of [clientBody({name:'   '}),clientBody({email:'nope'})]) {
+    const invalid = await createClient(values); const shared = parseClientForm(values);
+    assert.equal(invalid.status,422); assert.ok(!shared.ok); assert.deepEqual(invalid.body.errors,shared.errors);
+  }
+  assert.equal(clientCount(),0);
+  const created = await createClient(valid);
+  assert.equal(created.status,201); assert.equal(created.body.data.name,'Studio'); assert.equal(typeof created.body.data.updatedAt,'string');
+  assert.deepEqual((await api(`clients/${created.body.data.id}`)).body.data,created.body.data);
+  const largest = await createClient(clientBody({name:'€'.repeat(200),company:'€'.repeat(200),address:'€'.repeat(500),phone:'€'.repeat(50)}),'synthetic-key-0000000009');
+  assert.equal(largest.status,201,'the largest valid client fits under 8 KB');
+});
+test('client reads carry the version, and edits check it before the fields', async () => {
+  const c = client('Studio');
+  const OLD = '2026-10-15 04:00:00.000';
+  getDb().prepare('UPDATE clients SET updated_at = ? WHERE id = ?').run(OLD,c);
+  assert.equal((await api('clients')).body.data[0].updatedAt,OLD);
+  repo.updateClient(c,{name:'Renamed on the web',company:'',address:'',email:'',phone:''});
+  const seen = (await api(`clients/${c}`)).body.data.updatedAt;
+  assert.notEqual(seen,OLD,'a web edit changes the version');
+  assert.equal((await api(`clients/${c}`,'PATCH',clientBody())).status,400,'updatedAt is required');
+  const stale = await api(`clients/${c}`,'PATCH',{...clientBody({name:''}),updatedAt:OLD});
+  assert.equal(stale.status,409); assert.equal(stale.body.message,'This client changed elsewhere. Reload to see the latest version.');
+  assert.equal((await api(`clients/${c}`)).body.data.name,'Renamed on the web');
+  getDb().prepare('UPDATE clients SET updated_at = ? WHERE id = ?').run(OLD,c);
+  const saved = await api(`clients/${c}`,'PATCH',{...clientBody({name:'  Studio v2  ',email:'a@example.test'}),updatedAt:OLD});
+  assert.equal(saved.status,200); assert.equal(saved.body.data.name,'Studio v2'); assert.equal(saved.body.data.email,'a@example.test');
+  assert.notEqual(saved.body.data.updatedAt,OLD);
+  const invalid = await api(`clients/${c}`,'PATCH',{...clientBody({name:''}),updatedAt:saved.body.data.updatedAt});
+  assert.equal(invalid.status,422); assert.deepEqual(invalid.body.errors,{name:'Enter a name'});
+  const missing = await api('clients/999999','PATCH',{...clientBody(),updatedAt:OLD});
+  assert.equal(missing.status,404); assert.equal(missing.body.message,'Client no longer exists.');
+});
+test('client deletes refuse clients with projects and keep their invoices', async () => {
+  const withProject = client('Has project'); project(withProject,'Design');
+  const refused = await api(`clients/${withProject}`,'DELETE');
+  assert.equal(refused.status,422); assert.deepEqual(refused.body,{message:REFUSAL},'no errors key, so the app shows the sentence');
+  assert.equal((await api(`clients/${withProject}`)).status,200);
+  const billed = client('Billed');
+  // No project: a client with only invoices can be deleted.
+  const invoice = repo.saveInvoice(null,{clientId:billed,projectId:null,billToName:'Billed Co',billToCompany:'',billToAddress:'',issueDate:'2026-10-01',dueDate:'2026-10-31',currency:'USD',taxRateBp:0,discountType:'amount',discountValue:0,downPaymentType:'amount',downPaymentValue:0,notes:'',items:[{description:'Design',qty:1,unitPrice:10000,notes:''}]});
+  const deleted = await api(`clients/${billed}`,'DELETE');
+  assert.equal(deleted.status,200); assert.deepEqual(deleted.body,{ok:true});
+  const kept = repo.getInvoice(invoice);
+  assert.equal(kept?.clientId,null); assert.equal(kept?.billToName,'Billed Co');
+  assert.equal((await api(`clients/${billed}`)).status,404);
+  assert.equal((await api(`clients/${billed}`,'DELETE')).status,404);
+});
+test('client creates replay once per key', async () => {
+  const first = await createClient(clientBody());
+  const replay = await createClient(clientBody());
+  assert.equal(replay.status,201); assert.equal(replay.headers.get('idempotent-replayed'),'true');
+  assert.equal(replay.body.data.id,first.body.data.id); assert.equal(clientCount(),1);
+  assert.equal((await createClient(clientBody({name:'Other'}))).status,422,'a key reused with another body');
 });

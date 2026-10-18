@@ -5,10 +5,11 @@ import { redirect } from "next/navigation";
 import type { Currency } from "./money";
 import * as repo from "./repo";
 import { today } from "./rules";
-import { parseClientForm, parseInvoiceForm, parseInvoiceNumber, parsePaymentForm, parseSettingsForm } from "./schemas";
+import { parseInvoiceForm, parseInvoiceNumber, parsePaymentForm, parseSettingsForm } from "./schemas";
 import type { ClientFormValues, FormState, InvoiceFormValues, PaymentFormValues, SettingsFormValues } from "./schemas";
 
 import { requireSession } from "./session";
+import * as writes from "./writes";
 import { revokeDeviceSession } from "./mobile-sessions";
 
 export async function revokeDeviceSessionAction(id: number): Promise<FormState> {
@@ -41,10 +42,14 @@ export async function saveSettingsAction(values: SettingsFormValues): Promise<Fo
 export async function saveClientAction(id: number | null, values: ClientFormValues): Promise<FormState> {
   await requireSession();
   if (id !== null && !isId(id)) return { message: "This client no longer exists." };
-  const parsed = parseClientForm(values);
-  if (!parsed.ok) return { errors: parsed.errors };
-  if (id === null) repo.createClient(parsed.data);
-  else if (!repo.updateClient(id, parsed.data)) return { message: "This client no longer exists." };
+  let result: ReturnType<typeof writes.saveClient>;
+  try {
+    result = writes.saveClient(id, values);
+  } catch (error) {
+    if (error instanceof repo.NotFoundError) return { message: "This client no longer exists." };
+    throw error;
+  }
+  if (!result.ok) return { errors: result.errors };
   refresh();
   return { ok: true };
 }

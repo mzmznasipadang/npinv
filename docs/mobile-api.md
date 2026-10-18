@@ -3,8 +3,9 @@
 All paths start with `/api/v1`. The iOS app uses the same SQLite file and financial
 repository functions as the dashboard. Business-data routes are read-only except
 tasks, which the app can also create, edit and delete, and projects, which it can
-also create, edit, archive and restore (see "Writes"). Device
-sessions use schema migrations 5 and 6; existing invoices, projects, tasks,
+also create, edit, archive and restore, and clients, which it can also create, edit
+and delete (see "Writes"). Device sessions use schema migrations 5 and 6, and
+migration 7 gives clients a version; existing invoices, projects, tasks,
 clients, and web authentication remain intact.
 
 ## Authentication
@@ -42,7 +43,8 @@ same predicates as their rows; limiting/offset happen in SQL. Pages outside the
 result set are empty. Page contents can change while the web dashboard is edited.
 
 Details at `/projects/:id`, `/tasks/:id`, `/clients/:id`, and `/invoices/:id` return
-`{ data: record }`, or 404. Invoice details include line-item IDs, payment history,
+`{ data: record }`, or 404. Client rows and details include `updatedAt`, the version a
+client edit sends back. Invoice details include line-item IDs, payment history,
 integer totals and balance, the same derived display status as the web, and
 `printVersions`: the print versions this invoice offers (`full`, plus `payments` when
 it has payments and `dp` when it requests a down payment).
@@ -109,6 +111,9 @@ dashboard, like the Server Actions do.
 | `PATCH /projects/:id` | the same fields plus `updatedAt` | 200 `{ data: project }` |
 | `POST /projects/:id/archive` | none | 200 `{ data: project }` |
 | `POST /projects/:id/restore` | none | 200 `{ data: project }` |
+| `POST /clients` with `Idempotency-Key` | `{ name, company, address, email, phone }` | 201 `{ data: client }` |
+| `PATCH /clients/:id` | the same fields plus `updatedAt` | 200 `{ data: client }` |
+| `DELETE /clients/:id` | none | 200 `{ ok: true }` |
 
 - **Actions.** `POST /resource/:id/<action>` runs one named state change the web offers
   as its own button, and returns `200 { data }` with the record in its read shape. It needs
@@ -117,22 +122,28 @@ dashboard, like the Server Actions do.
 
 - **Body.** JSON, at most 8 KiB, with exactly these keys and types; no query string.
   Values use the web form's shapes: dates are `""` for no date, and every project field
-  is a string (`clientId` is a decimal string such as `"12"`). Anything else is 400.
+  is a string (`clientId` is a decimal string such as `"12"`), as is every client field.
+  Anything else is 400.
 - **Validation.** 422 `{ message, errors: { field: message } }`, with the messages
-  `parseTaskForm` and `parseProjectForm` give the web forms. A missing client, or a
+  `parseTaskForm`, `parseProjectForm` and `parseClientForm` give the web forms. A missing client, or a
   client change on a project with linked invoices, is also 422 on `clientId`.
 - **Conflicts.** `updatedAt` is the value the app last read (tasks now include it).
   If the task has changed since, the PATCH writes nothing and returns 409. A PATCH
   never moves a task to another project. DELETE has no version check, like the web's Remove.
   A project's `updatedAt` also changes when one of its tasks is saved or deleted, and when
   it is archived or restored, so a project form opened before any of those gets 409.
-  Archive and restore have no version check, like the web's buttons.
+  Archive and restore have no version check, like the web's buttons. A client's
+  `updatedAt` changes on every save, from the web or the app.
 - **Retries.** `Idempotency-Key` (16 to 100 letters, digits, `-` or `_`) is required on
   creates. A repeat of the same request with the same key, from the same session, returns
   the stored response with `Idempotent-Replayed: true` instead of creating again. The same
   key with a different request is 422. Only successes are stored, for 24 hours.
+- **Client deletes.** No version check, like the web's Delete. A client with projects is
+  refused with 422 `{ message }` and no `errors`: "This client has projects. Keep the client
+  to preserve their project history." Nothing is deleted. A client with only invoices can be
+  deleted: its invoices stay, with `clientId` null and their bill-to details unchanged.
 - **Other statuses.** 401 without a valid session, 403 for a `read` session, 404 when the
-  task or project is gone, 405 for other methods. Projects can't be deleted. Other
+  task, project or client is gone, 405 for other methods. Projects can't be deleted. Other
   resources still return 405 to writes.
 
 ## Rollout
@@ -140,7 +151,9 @@ dashboard, like the Server Actions do.
 Back up the SQLite file before deploying using the existing deploy procedure.
 Migration 5 adds only device-session storage and runs transactionally. Migration 6
 adds the session `scope` column (existing sessions become `read`) and the
-`idempotency_keys` table; an older image ignores both. Rolling
+`idempotency_keys` table; an older image ignores both. Migration 7 adds
+`clients.updated_at` and stamps every existing client; an older image ignores it, and
+clients it adds get `''`, which still works as a version. Rolling
 back the application leaves the extra table unused; restoring the complete
 pre-deploy backup also removes sessions created since that backup. Do not replace
 individual financial tables. Keep the backend behind the current HTTPS tailnet.

@@ -64,12 +64,25 @@ try {
   const archived=await action('archive'); assert.equal(archived.status,200); assert.ok((await archived.json()).data.archivedAt);
   const restored=await action('restore'); assert.equal(restored.status,200); assert.equal((await restored.json()).data.archivedAt,null);
   assert.equal((await action('archive','GET')).status,405);
+  const clientFields={name:'Smoke client',company:'',address:'',email:'',phone:''};
+  const createClient=()=>fetch(base+'/api/v1/clients',{method:'POST',headers:{...writing,'idempotency-key':'synthetic-smoke-key-0002'},body:JSON.stringify(clientFields)});
+  const clientMade=await createClient(); assert.equal(clientMade.status,201); const newClient=(await clientMade.json()).data;
+  const clientReplay=await createClient(); assert.equal(clientReplay.status,201); assert.equal(clientReplay.headers.get('idempotent-replayed'),'true');
+  assert.equal((await clientReplay.json()).data.id,newClient.id);
+  const editClient=updatedAt=>fetch(base+`/api/v1/clients/${newClient.id}`,{method:'PATCH',headers:writing,body:JSON.stringify({...clientFields,name:'Smoke client v2',updatedAt})});
+  assert.equal((await editClient(newClient.updatedAt)).status,200);
+  assert.equal((await editClient(newClient.updatedAt)).status,409);
+  const refused=await fetch(base+`/api/v1/clients/${client}`,{method:'DELETE',headers});
+  assert.equal(refused.status,422);
+  assert.deepEqual(await refused.json(),{message:'This client has projects. Keep the client to preserve their project history.'});
+  assert.equal((await fetch(base+`/api/v1/clients/${newClient.id}`,{method:'DELETE',headers})).status,200);
+  assert.equal((await fetch(base+`/api/v1/clients/${newClient.id}`,{headers})).status,404);
   const settings=await fetch(base+'/settings',{headers:{cookie:`npinv_session=${createSession()}`}});
   assert.equal(settings.status,200); const html=await settings.text();
   assert.ok(html.includes('Synthetic phone')); assert.ok(html.includes('Mobile devices')); assert.ok(!html.includes(credential.token));
   assert.equal((await fetch(base+`/api/v1/sessions/${credential.id}`,{method:'DELETE',headers})).status,200);
   assert.equal((await fetch(base+'/api/v1/clients',{headers})).status,401);
-  console.log('Mobile HTTP smoke passed: auth, five reads, strict raw queries, balances, project writes (create, replay, edit, conflict, archive, restore, 405), web device list, and revocation.');
+  console.log('Mobile HTTP smoke passed: auth, five reads, strict raw queries, balances, project writes (create, replay, edit, conflict, archive, restore, 405), client writes (create, replay, edit, conflict, refused delete, delete), web device list, and revocation.');
 } finally {
   if(server.exitCode===null) server.kill('SIGTERM');
   await stopped;
