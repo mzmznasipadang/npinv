@@ -124,6 +124,8 @@ dashboard, like the Server Actions do.
 | `POST /invoices/:id/revert` | none | 200 `{ data: invoice }` |
 | `POST /invoices/:id/duplicate` with `Idempotency-Key` | none | 201 `{ data: invoice }`, the copy |
 | `DELETE /invoices/:id` | none | 200 `{ ok: true }` |
+| `POST /invoices/:id/payments` with `Idempotency-Key` | `{ paidOn, amount, note, writeOff, shownCurrency, shownBalance }` | 201 `{ data: invoice }` |
+| `DELETE /invoices/:id/payments/:paymentId` | none | 200 `{ data: invoice }` |
 
 - **Actions.** `POST /resource/:id/<action>` runs one named state change the web offers
   as its own button, and returns `200 { data }` with the record in its read shape. It needs
@@ -173,6 +175,16 @@ dashboard, like the Server Actions do.
   to draft." and "Remove its payments before sending it back to draft." A malformed number
   is 422 on `number`. Duplicate makes an unnumbered draft issued on the request's business
   date. Delete works in any status and removes its lines and payments.
+- **Payments.** Both payment endpoints return the invoice, since a payment changes its balance,
+  status and `paidAt`. `paidOn`, `amount` and `note` use the web form's shapes, `writeOff` is a
+  boolean, and `shownCurrency` and `shownBalance` (an integer in the smallest unit) are what the
+  app showed. If either differs from the invoice, the payment is refused with 409 and nothing is
+  written. `parsePaymentForm`'s messages are 422 on their fields, in the invoice's currency. The
+  writer's refusals are 422 `{ message }` with no `errors`: "Payments can only be recorded on a
+  sent invoice.", "That is more than the … still owed.", "Nothing is left to write off." and
+  "This invoice already has a write-off." Removing a payment has no version check, like the web's
+  Remove; a payment not on that invoice is 404 "This payment no longer exists.". A retried
+  payment with the same key returns the original 201, even though the balance has since changed.
 - **Other statuses.** 401 without a valid session, 403 for a `read` session, 404 when the
   task, project, client or invoice is gone, 405 for other methods. Projects can't be deleted. Other
   resources still return 405 to writes.

@@ -1,7 +1,8 @@
 import { parseProjectForm, parseTaskForm } from './project-schemas.ts';
 import * as projects from './projects.ts';
 import * as repo from './repo.ts';
-import { parseClientForm, parseInvoiceForm, parseInvoiceNumber } from './schemas.ts';
+import { parseClientForm, parseInvoiceForm, parseInvoiceNumber, parsePaymentForm } from './schemas.ts';
+import type { Currency } from './money.ts';
 import type { FieldErrors } from './schemas.ts';
 
 // One function per write, shared by the web Server Actions and the mobile API so both parse and write the same way.
@@ -34,4 +35,10 @@ export function saveInvoice(id: number | null, values: unknown): { ok: true; id:
 export function markSent(id: number, number: unknown): { ok: true } | { ok: false; errors: FieldErrors } | { ok: false; error: string } {
   const parsed = parseInvoiceNumber(number);
   return parsed.ok ? repo.markSent(id, parsed.data) : parsed;
+}
+
+/** A payment in the invoice currency the person saw. `shown` is also the guard: the writer refuses a balance that has since changed. */
+export function recordPayment(id: number, shown: { currency: Currency; balance: number }, values: unknown): { ok: true } | { ok: false; errors: FieldErrors } | { ok: false; error: string } {
+  const parsed = parsePaymentForm(values, shown.currency);
+  return parsed.ok ? repo.recordPayment(id, shown.currency, parsed.data, shown.balance) : parsed;
 }
