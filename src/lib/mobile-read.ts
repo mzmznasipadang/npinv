@@ -1,4 +1,5 @@
-import { addDays } from './rules.ts';
+import { addDays, displayStatus, printVersions } from './rules.ts';
+import { getInvoice, suggestNumber } from './repo.ts';
 import { getDb } from './db.ts';
 export type Pagination = { page:number; pageSize:number; total:number; hasMore:boolean };
 export type Page<T> = { data:T[]; pagination:Pagination };
@@ -36,4 +37,13 @@ export function readTask(id:number) {
 }
 export function readClient(id:number) {
   return getDb().prepare('SELECT id,name,company,address,email,phone,updated_at AS updatedAt FROM clients WHERE id = ?').get(id) ?? null;
+}
+/** The invoice as the app reads it: the web's record plus its display status, print versions, version and, for an unnumbered draft, the next number. */
+export function readInvoice(id:number,todayDate:string) {
+  const invoice = getInvoice(id);
+  if(!invoice) return null;
+  const {updatedAt} = getDb().prepare('SELECT updated_at AS updatedAt FROM invoices WHERE id = ?').get(id) as {updatedAt:string};
+  return {...invoice,display:displayStatus(invoice.status,invoice.dueDate,todayDate,invoice.paid),
+    printVersions:printVersions(invoice.payments.length>0,invoice.downPaymentValue>0,undefined).versions,
+    updatedAt,suggestedNumber:invoice.status==='draft' && invoice.number===null ? suggestNumber(id) : null};
 }

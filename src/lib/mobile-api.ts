@@ -9,8 +9,8 @@ import { getDb, transaction } from './db.ts';
 import * as writes from './writes.ts';
 import * as repo from './repo.ts';
 import * as projects from './projects.ts';
-import { pageOf, readClients, readClient, readTasks, readTask } from './mobile-read.ts';
-import { displayStatus, isValidDate, printVersions, today } from './rules.ts';
+import { pageOf, readClients, readClient, readInvoice, readTasks, readTask } from './mobile-read.ts';
+import { isValidDate, printVersions, today } from './rules.ts';
 import { invoicePrintDocument } from './invoice-print.ts';
 import type { PrintFonts, PrintImages } from './invoice-print.ts';
 
@@ -38,6 +38,7 @@ const bodies = {
   createClient:z.object(clientValues).strict(),
   editClient:z.object({...clientValues,updatedAt:z.string().max(40)}).strict(),
 };
+const BODY_LIMIT = 8192;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,100}$/;
 const KEY_HOURS = 24;
 function parameters(url:URL): Record<string,string> {
@@ -79,12 +80,12 @@ function idempotent(session:DeviceSession,key:string|null,request:string,now:num
     return json(body,201);
   });
 }
-/** One write endpoint. `key` marks a create (Idempotency-Key, 201); `body` says whether it reads a JSON body. */
-type WriteRoute = {key:boolean;body:boolean;prepare:(id:number,raw:unknown)=>()=>object};
+/** One write endpoint. `key` marks a create (Idempotency-Key, 201); `body` says whether it reads a JSON body, of at most `limit` bytes. */
+type WriteRoute = {key:boolean;body:boolean;limit:number;prepare:(id:number,raw:unknown,now:number)=>()=>object};
 // The body is parsed before any transaction opens, so a malformed one is a 400 that never reaches the write.
-function route<T>(options:{key?:true;body?:z.ZodType<T>},write:(id:number,values:T)=>object):WriteRoute {
-  const {key,body}=options;
-  return {key:!!key,body:!!body,prepare:(id,raw)=>{const values=(body?parse(body,raw):undefined) as T;return ()=>write(id,values);}};
+function route<T>(options:{key?:true;body?:z.ZodType<T>;limit?:number},write:(id:number,values:T,now:number)=>object):WriteRoute {
+  const {key,body,limit=BODY_LIMIT}=options;
+  return {key:!!key,body:!!body,limit,prepare:(id,raw,now)=>{const values=(body?parse(body,raw):undefined) as T;return ()=>write(id,values,now);}};
 }
 // Keyed by path, with the record ID as `:id`, then by method. A Map, so paths such as `constructor` match nothing.
 // Each write runs synchronously in one transaction and returns the JSON response body.
@@ -159,12 +160,12 @@ function loadPrintAssets() {
     .then(([icon,logo,latin,latinExt])=>({images:{icon,logo},fonts:{latin,latinExt}}));
   return printAssets.catch(error=>{printAssets=undefined;throw error;});
 }
-async function jsonBody(request:Request) {
+async function jsonBody(request:Request,limit=BODY_LIMIT) {
   if(request.headers.get('content-type')?.split(';')[0].trim()!=='application/json') throw new HTTPError(400,'Send a JSON request.');
   const reader=request.body?.getReader(); if(!reader) throw new HTTPError(400,'A JSON body is required.');
   let size=0; const chunks:Uint8Array[]=[];
   try {
-    while(true) {const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>8192){await reader.cancel();throw new HTTPError(413,'The request is too large.');}chunks.push(value);}
+    while(true) {const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>limit){await reader.cancel();throw new HTTPError(413,'The request is too large.');}chunks.push(value);}
   } finally {reader.releaseLock();}
   const bytes=new Uint8Array(size); let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
   try {return JSON.parse(new TextDecoder().decode(bytes));} catch {throw new HTTPError(400,'Invalid JSON.');}
@@ -200,9 +201,11 @@ export async function handleMobileRequest(request:Request,now=Date.now()):Promis
       parse(z.object({}).strict(),parameters(url));
       const id=idText?parse(positive,idText):0;
       // Read and parse the body first: transaction() is synchronous, so the write itself can't await.
-      const raw=row.body?await jsonBody(request):undefined;
-      const write=row.prepare(id,raw);
-      return row.key ? idempotent(current,request.headers.get('idempotency-key'),`${method} ${resource} ${JSON.stringify(raw)}`,now,write) : json(transaction(write));
+      const raw=row.body?await jsonBody(request,row.limit):undefined;
+      const write=row.prepare(id,raw,now);
+      // The hash covers the whole path, so one key can't replay a duplicate of a different invoice.
+      const path=[resource,idText,...extra].filter(Boolean).join('/');
+      return row.key ? idempotent(current,request.headers.get('idempotency-key'),`${method} ${path} ${JSON.stringify(raw)}`,now,write) : json(transaction(write));
     }
     if(extra.length || !resource) throw new HTTPError(404,'Not found.');
     if(resource==='sessions') {
@@ -214,6 +217,11 @@ export async function handleMobileRequest(request:Request,now=Date.now()):Promis
         return json({ok:true});
       }
       throw new HTTPError(405,'Method not allowed.');
+    }
+    if(resource==='settings' && !idText) {
+      if(method!=='GET') throw new HTTPError(405,'Method not allowed.');
+      parse(z.object({}).strict(),parameters(url));
+      return json({data:repo.getSettings()});
     }
     if(method!=='GET') throw new HTTPError(405,'This API is read-only.');
     const todayDate=today(new Date(now));
@@ -228,7 +236,7 @@ export async function handleMobileRequest(request:Request,now=Date.now()):Promis
       if(resource==='clients') data=readClient(id);
       if(resource==='tasks') data=readTask(id);
       if(resource==='projects') data=projects.getProject(id);
-      if(resource==='invoices') {const invoice=repo.getInvoice(id);data=invoice?{...invoice,display:displayStatus(invoice.status,invoice.dueDate,todayDate,invoice.paid),printVersions:printVersions(invoice.payments.length>0,invoice.downPaymentValue>0,undefined).versions}:null;}
+      if(resource==='invoices') data=readInvoice(id,todayDate);
       if(!data) throw new HTTPError(404,'Record no longer exists.');
       return json({data});
     }
@@ -241,7 +249,7 @@ export async function handleMobileRequest(request:Request,now=Date.now()):Promis
   } catch(error) {
     if(error instanceof HTTPError) return json({message:error.message,...(error.errors && {errors:error.errors})},error.status);
     if(error instanceof repo.NotFoundError) return json({message:error.message},404);
-    if(error instanceof repo.ProjectConflictError) return json({message:'Check the highlighted fields.',errors:{[error.field]:error.message}},422);
+    if(error instanceof repo.ProjectConflictError || error instanceof repo.PaymentConflictError) return json({message:'Check the highlighted fields.',errors:{[error.field]:error.message}},422);
     return json({message:'Unable to load data. Try again.'},500);
   }
 }

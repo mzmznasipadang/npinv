@@ -423,3 +423,24 @@ test('client creates replay once per key', async () => {
   assert.equal(replay.body.data.id,first.body.data.id); assert.equal(clientCount(),1);
   assert.equal((await createClient(clientBody({name:'Other'}))).status,422,'a key reused with another body');
 });
+const draft = () => repo.saveInvoice(null,{clientId:null,projectId:null,billToName:'Synthetic',billToCompany:'',billToAddress:'',issueDate:TODAY,dueDate:'2026-10-31',currency:'USD',taxRateBp:0,discountType:'amount',discountValue:0,downPaymentType:'amount',downPaymentValue:0,notes:'',items:[{description:'Design',qty:1,unitPrice:10000,notes:''}]});
+test('invoice reads carry the version, and a suggested number only for unnumbered drafts', async () => {
+  const id = draft();
+  const read = (await api(`invoices/${id}`)).body.data;
+  assert.equal(read.suggestedNumber,'INV-2026-001'); assert.equal(typeof read.updatedAt,'string');
+  repo.markSent(id,'INV-2026-001');
+  assert.equal((await api(`invoices/${id}`)).body.data.suggestedNumber,null);
+  repo.revertToDraft(id);
+  const reverted = (await api(`invoices/${id}`)).body.data;
+  assert.equal(reverted.status,'draft'); assert.equal(reverted.number,'INV-2026-001'); assert.equal(reverted.suggestedNumber,null);
+});
+test('settings are readable by any session and stay read-only', async () => {
+  const read = createDeviceSession('Old phone', NOW).token;
+  getDb().prepare("UPDATE device_sessions SET scope = 'read' WHERE device_name = 'Old phone'").run();
+  const settings = await api('settings','GET',undefined,read);
+  assert.equal(settings.status,200); assert.deepEqual(settings.body.data,repo.getSettings());
+  assert.equal((await api('settings',undefined,undefined,null)).status,401);
+  assert.equal((await api('settings?x=1')).status,400);
+  assert.equal((await api('settings','PATCH',{})).status,405);
+  assert.equal((await api('settings/1')).status,404);
+});
