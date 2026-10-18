@@ -30,6 +30,11 @@ const filters = {
 const taskValues = {title:z.string(),dueDate:z.string(),completed:z.boolean()};
 const projectValues = {clientId:z.string(),name:z.string(),description:z.string(),status:z.string(),startDate:z.string(),deadline:z.string()};
 const clientValues = {name:z.string(),company:z.string(),address:z.string(),email:z.string(),phone:z.string()};
+const invoiceItem = z.object({description:z.string(),qty:z.string(),unitPrice:z.string(),notes:z.string()}).strict();
+const invoiceValues = {clientId:z.string(),projectId:z.string(),billToName:z.string(),billToCompany:z.string(),billToAddress:z.string(),
+  issueDate:z.string(),dueDate:z.string(),currency:z.string(),taxEnabled:z.boolean(),taxRate:z.string(),discountEnabled:z.boolean(),
+  discountType:z.string(),discount:z.string(),downPaymentEnabled:z.boolean(),downPaymentType:z.string(),downPayment:z.string(),
+  notes:z.string(),items:z.array(invoiceItem)};
 const bodies = {
   createTask:z.object({projectId:z.int().positive(),...taskValues}).strict(),
   editTask:z.object({...taskValues,updatedAt:z.string().max(40)}).strict(),
@@ -37,7 +42,12 @@ const bodies = {
   editProject:z.object({...projectValues,updatedAt:z.string().max(40)}).strict(),
   createClient:z.object(clientValues).strict(),
   editClient:z.object({...clientValues,updatedAt:z.string().max(40)}).strict(),
+  createInvoice:z.object(invoiceValues).strict(),
+  editInvoice:z.object({...invoiceValues,updatedAt:z.string().max(40)}).strict(),
+  sendInvoice:z.object({number:z.string().max(100),updatedAt:z.string().max(40)}).strict(),
 };
+// 200 lines of 3-byte characters at every maximum come to about 345 KB.
+const INVOICE_LIMIT = 524288;
 const BODY_LIMIT = 8192;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,100}$/;
 const KEY_HOURS = 24;
@@ -62,6 +72,21 @@ function requireWrite(session:DeviceSession) {
 }
 function invalid(errors:Record<string,string>):never { throw new HTTPError(422,'Check the highlighted fields.',errors); }
 type TaskRecord = {projectId:number;updatedAt:string};
+const GONE_INVOICE = 'Invoice no longer exists.';
+const todayOf = (now:number) => today(new Date(now));
+/** The invoice, or 404. With `updatedAt`, also 409 when it changed since the app read it. */
+function currentInvoice(id:number,now:number,updatedAt?:string) {
+  const invoice=readInvoice(id,todayOf(now));
+  if(!invoice) throw new HTTPError(404,GONE_INVOICE);
+  if(updatedAt!==undefined && invoice.updatedAt!==updatedAt) throw new HTTPError(409,'This invoice changed elsewhere. Reload to see the latest version.');
+  return invoice;
+}
+/** Saves through the shared writer. A total too large to store is the web's sentence, not a field error. */
+function saveInvoice(id:number|null,values:unknown,now:number) {
+  let result:ReturnType<typeof writes.saveInvoice>;
+  try {result=writes.saveInvoice(id,values);} catch(error) {if(error instanceof RangeError) throw new HTTPError(422,'The invoice total is too large to store.');throw error;}
+  return result.ok ? {data:readInvoice(result.id,todayOf(now))} : invalid(result.errors);
+}
 /** Runs a create once per session and key: a retry with the same request gets the stored 201 response instead of a second record. */
 function idempotent(session:DeviceSession,key:string|null,request:string,now:number,write:()=>object):Response {
   if(!key || !IDEMPOTENCY_KEY.test(key)) throw new HTTPError(400,'Send an Idempotency-Key header of 16 to 100 letters, digits, dashes, or underscores.');
@@ -143,6 +168,29 @@ const writeRoutes=new Map<string,Partial<Record<string,WriteRoute>>>([
       return {ok:true};
     }),
   }],
+  ['invoices',{POST:route({key:true,body:bodies.createInvoice,limit:INVOICE_LIMIT},(_,values,now)=>saveInvoice(null,values,now))}],
+  ['invoices/:id',{
+    PATCH:route({body:bodies.editInvoice,limit:INVOICE_LIMIT},(id,{updatedAt,...values},now)=>{currentInvoice(id,now,updatedAt);return saveInvoice(id,values,now);}),
+    DELETE:route({},id=>{if(!repo.deleteInvoice(id)) throw new HTTPError(404,GONE_INVOICE);return {ok:true};}),
+  }],
+  // A writer's refusal carries no errors, so the app's alert shows its sentence.
+  ['invoices/:id/send',{POST:route({body:bodies.sendInvoice},(id,{number,updatedAt},now)=>{
+    currentInvoice(id,now,updatedAt);
+    const result=writes.markSent(id,number);
+    if(!result.ok) {if('errors' in result) invalid(result.errors);throw new HTTPError(422,result.error);}
+    return {data:readInvoice(id,todayOf(now))};
+  })}],
+  ['invoices/:id/revert',{POST:route({},(id,_,now)=>{
+    currentInvoice(id,now);
+    const result=repo.revertToDraft(id);
+    if(!result.ok) throw new HTTPError(422,result.error);
+    return {data:readInvoice(id,todayOf(now))};
+  })}],
+  ['invoices/:id/duplicate',{POST:route({key:true},(id,_,now)=>{
+    const copy=repo.duplicateInvoice(id,todayOf(now));
+    if(copy===null) throw new HTTPError(404,GONE_INVOICE);
+    return {data:readInvoice(copy,todayOf(now))};
+  })}],
 ]);
 // The app renders this document offline, so it may load nothing: images and fonts arrive inline and scripts never run.
 const PRINT_CSP="default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'";
