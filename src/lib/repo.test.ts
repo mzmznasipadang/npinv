@@ -579,3 +579,20 @@ test('stale project-prefilled invoice is rejected if its client changes or it is
   assert.throws(()=>repo.saveInvoice(null,{...stale,clientId:b}),repo.ProjectConflictError);
   assert.equal(repo.listInvoices({},TODAY).length,0);
 });
+
+test("every invoice write leaves a millisecond version", () => {
+  const MS = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$/;
+  const stamp = (id: number) => (getDb().prepare("SELECT updated_at AS v FROM invoices WHERE id = ?").get(id) as { v: string }).v;
+  // Start each write from a seconds-format stamp, so a match proves that write stamped it.
+  const reset = (id: number) => getDb().prepare("UPDATE invoices SET updated_at = '2026-10-01 00:00:00' WHERE id = ?").run(id);
+  const id = repo.saveInvoice(null, input());
+  assert.match(stamp(id), MS);
+  const steps: [string, () => void][] = [
+    ["save", () => repo.saveInvoice(id, input())],
+    ["markSent", () => assert.deepEqual(repo.markSent(id, "INV-2026-050"), { ok: true })],
+    ["recordPayment", () => assert.deepEqual(repo.recordPayment(id, "IDR", pay(1_000)), { ok: true })],
+    ["removePayment", () => assert.ok(repo.removePayment(id, invoice(id).payments[0].id))],
+    ["revertToDraft", () => assert.deepEqual(repo.revertToDraft(id), { ok: true })],
+  ];
+  for (const [name, write] of steps) { reset(id); write(); assert.match(stamp(id), MS, name); }
+});
