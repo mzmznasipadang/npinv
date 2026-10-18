@@ -4,7 +4,7 @@ import { getDb } from './db.ts';
 import { createClient, getInvoice, listClients, markSent, NotFoundError, PaymentConflictError, ProjectConflictError, recordPayment } from './repo.ts';
 import * as projects from './projects.ts';
 import { parseProjectForm } from './project-schemas.ts';
-import { parseClientForm, parseInvoiceForm } from './schemas.ts';
+import { parseClientForm, parseInvoiceForm, parsePaymentForm } from './schemas.ts';
 import * as writes from './writes.ts';
 beforeEach(() => getDb().exec('DELETE FROM invoices; DELETE FROM projects; DELETE FROM clients'));
 const client = () => createClient({name:'Synthetic', company:'', address:'', email:'', phone:''});
@@ -89,4 +89,30 @@ test('markSent parses the number, then reports the writer refusals', () => {
   assert.deepEqual(writes.markSent(first.id, 'inv-1'), {ok:true});
   assert.equal(getInvoice(first.id)?.number, 'INV-1');
   assert.deepEqual(writes.markSent(second.id, 'INV-1'), {ok:false, error:'Number INV-1 is already used by another invoice.'});
+});
+
+const sent = (currency = 'USD') => {
+  const created = writes.saveInvoice(null, invoiceValues({currency, items:[{description:'Design', qty:'1', unitPrice:'100', notes:''}]}));
+  assert.ok(created.ok); assert.deepEqual(markSent(created.id, `INV-${created.id}`), {ok:true});
+  return created.id;
+};
+const paymentCount = () => (getDb().prepare('SELECT COUNT(*) AS n FROM payments').get() as {n:number}).n;
+test('recordPayment returns the parser errors and records nothing', () => {
+  const id = sent('IDR');
+  for (const amount of ['0', '1.5']) {
+    const values = {paidOn:'2026-10-02', amount, note:'', writeOff:false};
+    assert.deepEqual(writes.recordPayment(id, {currency:'IDR', balance:100}, values), parsePaymentForm(values, 'IDR'));
+  }
+  assert.equal(paymentCount(), 0);
+});
+test('recordPayment records a payment, and a write-off with it', () => {
+  const id = sent();
+  assert.deepEqual(writes.recordPayment(id, {currency:'USD', balance:10000}, {paidOn:'2026-10-02', amount:'40', note:'', writeOff:true}), {ok:true});
+  const invoice = getInvoice(id)!;
+  assert.equal(invoice.payments.length, 2); assert.equal(invoice.status, 'paid'); assert.equal(invoice.balance, 0);
+});
+test('recordPayment returns the writer refusals', () => {
+  const id = sent();
+  assert.deepEqual(writes.recordPayment(id, {currency:'USD', balance:10000}, {paidOn:'2026-10-02', amount:'200', note:'', writeOff:false}),
+    {ok:false, error:'That is more than the $100.00 still owed.'});
 });

@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import type { Currency } from "./money";
 import * as repo from "./repo";
 import { today } from "./rules";
-import { parsePaymentForm, parseSettingsForm } from "./schemas";
+import { parseSettingsForm } from "./schemas";
 import type { ClientFormValues, FormState, InvoiceFormValues, PaymentFormValues, SettingsFormValues } from "./schemas";
 
 import { requireSession } from "./session";
@@ -107,10 +107,8 @@ export async function recordPaymentAction(
   if ((currency !== "IDR" && currency !== "USD") || !Number.isSafeInteger(shown.balance)) {
     return { message: "Reload the page and try again." };
   }
-  const parsed = parsePaymentForm(values, currency);
-  if (!parsed.ok) return { errors: parsed.errors };
-  const result = repo.recordPayment(id, currency, parsed.data, shown.balance);
-  if (!result.ok) return { message: result.error };
+  const result = writes.recordPayment(id, { currency, balance: shown.balance }, values);
+  if (!result.ok) return "errors" in result ? { errors: result.errors } : { message: result.error };
   refresh();
   return { ok: true };
 }
