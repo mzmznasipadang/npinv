@@ -98,12 +98,23 @@ try {
   assert.equal((await (await duplicate()).json()).data.id,copy.id);
   assert.equal((await fetch(base+`/api/v1/invoices/${copy.id}`,{method:'DELETE',headers})).status,200);
   assert.equal((await fetch(base+`/api/v1/invoices/${copy.id}`,{headers})).status,404);
+  const seenInvoice=(await (await fetch(base+`/api/v1/invoices/${invoice}`,{headers})).json()).data;
+  const paymentFields={paidOn:'2026-10-16',amount:'10',note:'Smoke',writeOff:false,shownCurrency:seenInvoice.currency,shownBalance:seenInvoice.balance};
+  const recordPayment=(body=paymentFields)=>fetch(base+`/api/v1/invoices/${invoice}/payments`,{method:'POST',headers:keyed('synthetic-smoke-key-0005'),body:JSON.stringify(body)});
+  const paidResponse=await recordPayment(); assert.equal(paidResponse.status,201); const afterPayment=(await paidResponse.json()).data;
+  assert.equal(afterPayment.balance,seenInvoice.balance-1000);
+  const paymentReplay=await recordPayment(); assert.equal(paymentReplay.status,201); assert.equal(paymentReplay.headers.get('idempotent-replayed'),'true');
+  const stalePayment=await fetch(base+`/api/v1/invoices/${invoice}/payments`,{method:'POST',headers:keyed('synthetic-smoke-key-0006'),body:JSON.stringify(paymentFields)});
+  assert.equal(stalePayment.status,409);
+  const newPayment=afterPayment.payments.find(p=>p.note==='Smoke');
+  const unpaid=await fetch(base+`/api/v1/invoices/${invoice}/payments/${newPayment.id}`,{method:'DELETE',headers});
+  assert.equal(unpaid.status,200); assert.equal((await unpaid.json()).data.balance,seenInvoice.balance);
   const settings=await fetch(base+'/settings',{headers:{cookie:`npinv_session=${createSession()}`}});
   assert.equal(settings.status,200); const html=await settings.text();
   assert.ok(html.includes('Synthetic phone')); assert.ok(html.includes('Mobile devices')); assert.ok(!html.includes(credential.token));
   assert.equal((await fetch(base+`/api/v1/sessions/${credential.id}`,{method:'DELETE',headers})).status,200);
   assert.equal((await fetch(base+'/api/v1/clients',{headers})).status,401);
-  console.log('Mobile HTTP smoke passed: auth, five reads, strict raw queries, balances, project writes (create, replay, edit, conflict, archive, restore, 405), client writes (create, replay, edit, conflict, refused delete, delete), settings read, invoice writes (create, replay, edit, conflict, send, revert, duplicate, replay, delete), web device list, and revocation.');
+  console.log('Mobile HTTP smoke passed: auth, five reads, strict raw queries, balances, project writes (create, replay, edit, conflict, archive, restore, 405), client writes (create, replay, edit, conflict, refused delete, delete), settings read, invoice writes (create, replay, edit, conflict, send, revert, duplicate, replay, delete), payments (record, replay, stale balance, remove), web device list, and revocation.');
 } finally {
   if(server.exitCode===null) server.kill('SIGTERM');
   await stopped;

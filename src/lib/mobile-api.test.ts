@@ -6,7 +6,7 @@ import * as projects from './projects.ts';
 import { createDeviceSession } from './mobile-sessions.ts';
 import { handleMobileRequest } from './mobile-api.ts';
 import { parseProjectForm, parseTaskForm } from './project-schemas.ts';
-import { parseClientForm, parseInvoiceForm } from './schemas.ts';
+import { parseClientForm, parseInvoiceForm, parsePaymentForm } from './schemas.ts';
 const NOW = Date.UTC(2026,9,15,3); const TODAY = '2026-10-15';
 let token: string;
 beforeEach(() => {
@@ -555,4 +555,76 @@ test('duplicate makes one dated, unnumbered copy per key', async () => {
   assert.equal(replay.status,201); assert.equal(replay.headers.get('idempotent-replayed'),'true'); assert.equal(replay.body.data.id,copy.body.data.id);
   assert.equal((await duplicate(second)).status,422,'a key is bound to its source invoice');
   assert.equal(invoiceCount(),3);
+});
+
+const sentInvoice = () => { const id = draft(); repo.markSent(id, `INV-${id}`); return id; };
+const payment = (overrides: Record<string, unknown> = {}) => ({paidOn:TODAY,amount:'40',note:'',writeOff:false,shownCurrency:'USD',shownBalance:10000,...overrides});
+const pay = (id: number, body: unknown, key: string | null = KEY, credential: string | null = token) =>
+  api(`invoices/${id}/payments`,'POST',body,credential,key === null ? {} : {'idempotency-key':key});
+const paymentRows = () => (getDb().prepare('SELECT COUNT(*) AS n FROM payments').get() as {n:number}).n;
+
+test('payment writes need a write-scope session, and other methods on their paths get 405 or 400', async () => {
+  const id = sentInvoice(); repo.recordPayment(id,'USD',{paidOn:TODAY,amount:100,note:'',writeOff:false});
+  const p = repo.getInvoice(id)!.payments[0].id;
+  assert.equal((await pay(id,payment(),KEY,null)).status,401);
+  assert.equal((await api(`invoices/${id}/payments/${p}`,'DELETE',undefined,null)).status,401);
+  const read = createDeviceSession('Old phone', NOW).token;
+  getDb().prepare("UPDATE device_sessions SET scope = 'read' WHERE device_name = 'Old phone'").run();
+  assert.equal((await pay(id,payment(),KEY,read)).status,403);
+  assert.equal((await api(`invoices/${id}/payments/${p}`,'DELETE',undefined,read)).status,403);
+  assert.equal((await api(`invoices/${id}/payments`)).status,405);
+  assert.equal((await api(`invoices/${id}/payments`,'PUT',{})).status,405);
+  assert.equal((await api(`invoices/${id}/payments/${p}`,'POST',{})).status,405);
+  assert.equal((await api(`invoices/${id}/payments/abc`,'DELETE')).status,400);
+  assert.equal(paymentRows(),1);
+});
+test('payment creates use strict bodies, the shown balance guard, the shared parser and the writer refusals', async () => {
+  const id = sentInvoice();
+  for (const [label,body] of [['unknown key',{...payment(),extra:1}],['string balance',payment({shownBalance:'10000'})],['missing writeOff',{...payment(),writeOff:undefined}]] as const) {
+    assert.equal((await pay(id,body)).status,400,label);
+  }
+  assert.equal((await pay(id,payment(),null)).status,400,'missing key');
+  for (const stale of [payment({shownBalance:9999}),payment({shownCurrency:'IDR'})]) {
+    const conflict = await pay(id,stale); assert.equal(conflict.status,409);
+    assert.equal(conflict.body.message,'This invoice changed elsewhere. Reload to see the latest version.');
+  }
+  const zero = await pay(id,payment({amount:'0'})); const shared = parsePaymentForm(payment({amount:'0'}),'USD');
+  assert.equal(zero.status,422); assert.ok(!shared.ok); assert.deepEqual(zero.body.errors,shared.errors);
+  assert.deepEqual((await pay(id,payment({amount:'200'}))).body,{message:'That is more than the $100.00 still owed.'});
+  assert.deepEqual((await pay(draft(),payment())).body,{message:'Payments can only be recorded on a sent invoice.'});
+  assert.equal(paymentRows(),0);
+});
+test('payments return the invoice: a full payment pays it, and a write-off closes it', async () => {
+  const full = sentInvoice();
+  const paid = await pay(full,payment({amount:'100'}));
+  assert.equal(paid.status,201); assert.equal(paid.body.data.status,'paid'); assert.equal(paid.body.data.balance,0); assert.equal(paid.body.data.paidAt,TODAY);
+  const part = sentInvoice();
+  const closed = await pay(part,payment({writeOff:true}),'synthetic-key-0000000002');
+  assert.equal(closed.body.data.status,'paid'); assert.deepEqual(closed.body.data.payments.map((p: {kind:string}) => p.kind),['payment','write_off']);
+  const another = sentInvoice(); repo.recordPayment(another,'USD',{paidOn:TODAY,amount:1000,note:'',writeOff:true});
+  repo.removePayment(another,repo.getInvoice(another)!.payments[0].id);
+  const second = await pay(another,payment({amount:'5',writeOff:true,shownBalance:repo.getInvoice(another)!.balance}),'synthetic-key-0000000003');
+  assert.deepEqual(second.body,{message:'This invoice already has a write-off.'});
+});
+test('a payment replays once per key, even after the balance has changed', async () => {
+  const id = sentInvoice();
+  const first = await pay(id,payment());
+  const replay = await pay(id,payment());
+  assert.equal(replay.status,201); assert.equal(replay.headers.get('idempotent-replayed'),'true'); assert.deepEqual(replay.body,first.body);
+  assert.equal(paymentRows(),1);
+  assert.equal((await pay(id,payment({amount:'50'}))).status,422);
+});
+test('removing a payment returns the invoice, and a missing payment or invoice gets 404', async () => {
+  const id = sentInvoice(); const other = sentInvoice();
+  await pay(id,payment({amount:'100'}));
+  const p = repo.getInvoice(id)!.payments[0].id;
+  repo.recordPayment(other,'USD',{paidOn:TODAY,amount:100,note:'',writeOff:false});
+  const otherPayment = repo.getInvoice(other)!.payments[0].id;
+  const removed = await api(`invoices/${id}/payments/${p}`,'DELETE');
+  assert.equal(removed.status,200); assert.equal(removed.body.data.status,'sent'); assert.equal(removed.body.data.balance,10000);
+  const again = await api(`invoices/${id}/payments/${p}`,'DELETE');
+  assert.equal(again.status,404); assert.equal(again.body.message,'This payment no longer exists.');
+  assert.equal((await api(`invoices/${id}/payments/${otherPayment}`,'DELETE')).status,404);
+  const gone = await api('invoices/99999/payments/1','DELETE');
+  assert.equal(gone.status,404); assert.equal(gone.body.message,'Invoice no longer exists.');
 });

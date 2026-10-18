@@ -45,6 +45,8 @@ const bodies = {
   createInvoice:z.object(invoiceValues).strict(),
   editInvoice:z.object({...invoiceValues,updatedAt:z.string().max(40)}).strict(),
   sendInvoice:z.object({number:z.string().max(100),updatedAt:z.string().max(40)}).strict(),
+  createPayment:z.object({paidOn:z.string().max(40),amount:z.string().max(100),note:z.string().max(300),writeOff:z.boolean(),
+    shownCurrency:z.string().max(10),shownBalance:z.int()}).strict(),
 };
 // 200 lines of 3-byte characters at every maximum come to about 345 KB.
 const INVOICE_LIMIT = 524288;
@@ -106,11 +108,11 @@ function idempotent(session:DeviceSession,key:string|null,request:string,now:num
   });
 }
 /** One write endpoint. `key` marks a create (Idempotency-Key, 201); `body` says whether it reads a JSON body, of at most `limit` bytes. */
-type WriteRoute = {key:boolean;body:boolean;limit:number;prepare:(id:number,raw:unknown,now:number)=>()=>object};
+type WriteRoute = {key:boolean;body:boolean;limit:number;prepare:(id:number,raw:unknown,now:number,paymentId:number)=>()=>object};
 // The body is parsed before any transaction opens, so a malformed one is a 400 that never reaches the write.
-function route<T>(options:{key?:true;body?:z.ZodType<T>;limit?:number},write:(id:number,values:T,now:number)=>object):WriteRoute {
+function route<T>(options:{key?:true;body?:z.ZodType<T>;limit?:number},write:(id:number,values:T,now:number,paymentId:number)=>object):WriteRoute {
   const {key,body,limit=BODY_LIMIT}=options;
-  return {key:!!key,body:!!body,limit,prepare:(id,raw,now)=>{const values=(body?parse(body,raw):undefined) as T;return ()=>write(id,values,now);}};
+  return {key:!!key,body:!!body,limit,prepare:(id,raw,now,paymentId)=>{const values=(body?parse(body,raw):undefined) as T;return ()=>write(id,values,now,paymentId);}};
 }
 // Keyed by path, with the record ID as `:id`, then by method. A Map, so paths such as `constructor` match nothing.
 // Each write runs synchronously in one transaction and returns the JSON response body.
@@ -191,6 +193,19 @@ const writeRoutes=new Map<string,Partial<Record<string,WriteRoute>>>([
     if(copy===null) throw new HTTPError(404,GONE_INVOICE);
     return {data:readInvoice(copy,todayOf(now))};
   })}],
+  // The shown currency and balance guard the payment, as on the web; the route checks them so a stale one is a 409, not the writer's sentence.
+  ['invoices/:id/payments',{POST:route({key:true,body:bodies.createPayment},(id,{shownCurrency,shownBalance,...values},now)=>{
+    const invoice=currentInvoice(id,now);
+    if(shownCurrency!==invoice.currency || shownBalance!==invoice.balance) throw new HTTPError(409,'This invoice changed elsewhere. Reload to see the latest version.');
+    const result=writes.recordPayment(id,{currency:invoice.currency,balance:shownBalance},values);
+    if(!result.ok) {if('errors' in result) invalid(result.errors);throw new HTTPError(422,result.error);}
+    return {data:readInvoice(id,todayOf(now))};
+  })}],
+  ['invoices/:id/payments/:paymentId',{DELETE:route({},(id,_,now,paymentId)=>{
+    currentInvoice(id,now);
+    if(!repo.removePayment(id,paymentId)) throw new HTTPError(404,'This payment no longer exists.');
+    return {data:readInvoice(id,todayOf(now))};
+  })}],
 ]);
 // The app renders this document offline, so it may load nothing: images and fonts arrive inline and scripts never run.
 const PRINT_CSP="default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'";
@@ -241,16 +256,18 @@ export async function handleMobileRequest(request:Request,now=Date.now()):Promis
       const {images,fonts}=await loadPrintAssets();
       return html(invoicePrintDocument(invoice,repo.getSettings(),version,images,fonts));
     }
-    const routes=writeRoutes.get([resource,...(idText?[':id']:[]),...extra].join('/'));
+    // A payment's ID is the one nested ID: invoices/:id/payments/:paymentId. It is parsed below, so a malformed one is a 400, not a table miss.
+    const nested=extra[0]==='payments' && extra.length===2;
+    const routes=writeRoutes.get([resource,...(idText?[':id']:[]),...(nested?['payments',':paymentId']:extra)].join('/'));
     // Every non-GET on a table path, and GET only on an action path: GET /projects/:id stays a read.
     if(routes && (method!=='GET' || extra.length)) {
       const row=routes[method]; if(!row) throw new HTTPError(405,'Method not allowed.');
       requireWrite(current);
       parse(z.object({}).strict(),parameters(url));
-      const id=idText?parse(positive,idText):0;
+      const id=idText?parse(positive,idText):0; const paymentId=nested?parse(positive,extra[1]):0;
       // Read and parse the body first: transaction() is synchronous, so the write itself can't await.
       const raw=row.body?await jsonBody(request,row.limit):undefined;
-      const write=row.prepare(id,raw,now);
+      const write=row.prepare(id,raw,now,paymentId);
       // The hash covers the whole path, so one key can't replay a duplicate of a different invoice.
       const path=[resource,idText,...extra].filter(Boolean).join('/');
       return row.key ? idempotent(current,request.headers.get('idempotency-key'),`${method} ${path} ${JSON.stringify(raw)}`,now,write) : json(transaction(write));
