@@ -308,8 +308,8 @@ export function saveInvoice(id: number | null, input: InvoiceInput): number {
       invoiceId = run(
         `INSERT INTO invoices (client_id, project_id, bill_to_name, bill_to_company, bill_to_address, issue_date, due_date,
            currency, tax_rate_bp, discount_type, discount_value, dp_type, dp_value, notes, subtotal,
-           discount_amount, tax_amount, total)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           discount_amount, tax_amount, total, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${STAMP})`,
         ...fields,
       ).id;
     } else {
@@ -332,7 +332,7 @@ export function saveInvoice(id: number | null, input: InvoiceInput): number {
         `UPDATE invoices SET client_id = ?, project_id = ?, bill_to_name = ?, bill_to_company = ?, bill_to_address = ?,
            issue_date = ?, due_date = ?, currency = ?, tax_rate_bp = ?, discount_type = ?, discount_value = ?,
            dp_type = ?, dp_value = ?, notes = ?, subtotal = ?, discount_amount = ?, tax_amount = ?, total = ?,
-           updated_at = datetime('now')
+           updated_at = ${STAMP}
          WHERE id = ?`,
         ...fields,
         id,
@@ -382,7 +382,7 @@ export function markSent(id: number, number: string): Result {
     if (one("SELECT 1 AS found FROM invoices WHERE number = ? COLLATE NOCASE AND id <> ?", final, id)) {
       return { ok: false, error: `Number ${final} is already used by another invoice.` };
     }
-    run("UPDATE invoices SET status = 'sent', number = ?, updated_at = datetime('now') WHERE id = ?", final, id);
+    run(`UPDATE invoices SET status = 'sent', number = ?, updated_at = ${STAMP} WHERE id = ?`, final, id);
     return { ok: true };
   });
 }
@@ -420,7 +420,7 @@ export function recordPayment(id: number, currency: Currency, input: PaymentInpu
       run("INSERT INTO payments (invoice_id, paid_on, amount, kind) VALUES (?, ?, ?, 'write_off')", id, input.paidOn, rest);
     }
     settle(id);
-    run("UPDATE invoices SET updated_at = datetime('now') WHERE id = ?", id);
+    run(`UPDATE invoices SET updated_at = ${STAMP} WHERE id = ?`, id);
     return { ok: true };
   });
 }
@@ -430,7 +430,7 @@ export function removePayment(invoiceId: number, paymentId: number): boolean {
   return transaction(() => {
     if (run("DELETE FROM payments WHERE id = ? AND invoice_id = ?", paymentId, invoiceId).changes === 0) return false;
     settle(invoiceId);
-    run("UPDATE invoices SET updated_at = datetime('now') WHERE id = ?", invoiceId);
+    run(`UPDATE invoices SET updated_at = ${STAMP} WHERE id = ?`, invoiceId);
     return true;
   });
 }
@@ -444,7 +444,7 @@ export function revertToDraft(id: number): Result {
     if (one("SELECT 1 AS found FROM payments WHERE invoice_id = ?", id)) {
       return { ok: false, error: "Remove its payments before sending it back to draft." };
     }
-    run("UPDATE invoices SET status = 'draft', updated_at = datetime('now') WHERE id = ?", id);
+    run(`UPDATE invoices SET status = 'draft', updated_at = ${STAMP} WHERE id = ?`, id);
     return { ok: true };
   });
 }

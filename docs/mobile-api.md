@@ -35,6 +35,7 @@ not unique hardware identifiers.
 | `/tasks` | `q`, `projectId`, `clientId`, `completed`, `archived`, `dueFrom`, `dueTo`, `attention=due` |
 | `/clients` | `q` |
 | `/invoices` | `q`, `projectId`, `clientId`, `currency`, `status`, `outstanding` |
+| `/settings` | No parameters; the stored business settings (`defaultTaxRateBp` in basis points, `defaultDueDays` a number). Read-only until settings editing ships |
 
 Collections additionally accept `page` (default 1, maximum 1,000,000) and `pageSize`
 (default 25, maximum 100). The response is
@@ -86,6 +87,9 @@ the outstanding balance of sent invoices split by days past the due date, using 
 Asia/Jakarta business date. Due today counts as not due; 60 days late is in
 `days31To60`. The four add up to `outstanding`, and the last three add up to `overdue`.
 
+An invoice detail also carries `updatedAt`, its version for edits, and `suggestedNumber`:
+the next number in its issue year for a draft that has none, otherwise `null`.
+
 Amounts are integers: whole rupiah for IDR and cents for USD. Percentages are basis
 points. Dates and overdue rules follow Asia/Jakarta. Payments received exclude
 write-offs; balance subtracts both, exactly as the dashboard does.
@@ -114,36 +118,63 @@ dashboard, like the Server Actions do.
 | `POST /clients` with `Idempotency-Key` | `{ name, company, address, email, phone }` | 201 `{ data: client }` |
 | `PATCH /clients/:id` | the same fields plus `updatedAt` | 200 `{ data: client }` |
 | `DELETE /clients/:id` | none | 200 `{ ok: true }` |
+| `POST /invoices` with `Idempotency-Key` | the invoice form's values (below) | 201 `{ data: invoice }` |
+| `PATCH /invoices/:id` | the same plus `updatedAt` | 200 `{ data: invoice }` |
+| `POST /invoices/:id/send` | `{ number, updatedAt }` | 200 `{ data: invoice }` |
+| `POST /invoices/:id/revert` | none | 200 `{ data: invoice }` |
+| `POST /invoices/:id/duplicate` with `Idempotency-Key` | none | 201 `{ data: invoice }`, the copy |
+| `DELETE /invoices/:id` | none | 200 `{ ok: true }` |
 
 - **Actions.** `POST /resource/:id/<action>` runs one named state change the web offers
   as its own button, and returns `200 { data }` with the record in its read shape. It needs
   no `Idempotency-Key` unless it creates a record. GET and other methods on an action
-  path return 405.
+  path return 405. `/duplicate` creates a record, so it needs a key and returns 201.
 
 - **Body.** JSON, at most 8 KiB, with exactly these keys and types; no query string.
   Values use the web form's shapes: dates are `""` for no date, and every project field
   is a string (`clientId` is a decimal string such as `"12"`), as is every client field.
   Anything else is 400.
+- **Invoice bodies.** At most 512 KiB, since an invoice may have 200 lines. The keys are
+  `clientId` (`""` for typed bill-to details), `projectId`, `billToName`, `billToCompany`,
+  `billToAddress`, `issueDate`, `dueDate`, `currency`, `taxEnabled`, `taxRate`,
+  `discountEnabled`, `discountType`, `discount`, `downPaymentEnabled`, `downPaymentType`,
+  `downPayment`, `notes` and `items`, an array of `{ description, qty, unitPrice, notes }`.
+  The three `…Enabled` keys are booleans; every other value is a string in the web form's
+  shape (prices such as `"150.50"`, rates such as `"11"`). Each save replaces every line, in
+  order. Line errors are keyed by position, such as `items.2.unitPrice`.
 - **Validation.** 422 `{ message, errors: { field: message } }`, with the messages
   `parseTaskForm`, `parseProjectForm` and `parseClientForm` give the web forms. A missing client, or a
-  client change on a project with linked invoices, is also 422 on `clientId`.
+  client change on a project with linked invoices, is also 422 on `clientId`. On invoices,
+  a project of another client is 422 on `projectId`, and an edit that recorded payments
+  don't allow is 422 on `currency` or `items`. A total too large to store is 422
+  `{ message }` with no `errors`.
 - **Conflicts.** `updatedAt` is the value the app last read (tasks now include it).
   If the task has changed since, the PATCH writes nothing and returns 409. A PATCH
   never moves a task to another project. DELETE has no version check, like the web's Remove.
   A project's `updatedAt` also changes when one of its tasks is saved or deleted, and when
   it is archived or restored, so a project form opened before any of those gets 409.
   Archive and restore have no version check, like the web's buttons. A client's
-  `updatedAt` changes on every save, from the web or the app.
+  `updatedAt` changes on every save, from the web or the app. An invoice's `updatedAt`
+  changes on every save, send, revert, and payment recorded or removed; send checks it,
+  revert and delete don't.
 - **Retries.** `Idempotency-Key` (16 to 100 letters, digits, `-` or `_`) is required on
   creates. A repeat of the same request with the same key, from the same session, returns
   the stored response with `Idempotent-Replayed: true` instead of creating again. The same
-  key with a different request is 422. Only successes are stored, for 24 hours.
+  key with a different request is 422. The request compared is the method, the whole path
+  and the body, so a key used to duplicate one invoice can't replay for another. Only
+  successes are stored, for 24 hours.
 - **Client deletes.** No version check, like the web's Delete. A client with projects is
   refused with 422 `{ message }` and no `errors`: "This client has projects. Keep the client
   to preserve their project history." Nothing is deleted. A client with only invoices can be
   deleted: its invoices stay, with `clientId` null and their bill-to details unchanged.
+- **Invoice actions.** Send assigns the number (an invoice that already has one keeps it).
+  The writer's refusals are 422 `{ message }` with no `errors`: "Only a draft can be marked
+  sent.", "Number … is already used by another invoice.", "Only a sent invoice can go back
+  to draft." and "Remove its payments before sending it back to draft." A malformed number
+  is 422 on `number`. Duplicate makes an unnumbered draft issued on the request's business
+  date. Delete works in any status and removes its lines and payments.
 - **Other statuses.** 401 without a valid session, 403 for a `read` session, 404 when the
-  task, project or client is gone, 405 for other methods. Projects can't be deleted. Other
+  task, project, client or invoice is gone, 405 for other methods. Projects can't be deleted. Other
   resources still return 405 to writes.
 
 ## Rollout
@@ -153,7 +184,9 @@ Migration 5 adds only device-session storage and runs transactionally. Migration
 adds the session `scope` column (existing sessions become `read`) and the
 `idempotency_keys` table; an older image ignores both. Migration 7 adds
 `clients.updated_at` and stamps every existing client; an older image ignores it, and
-clients it adds get `''`, which still works as a version. Rolling
+clients it adds get `''`, which still works as a version. Invoice writes stamp
+`updated_at` in milliseconds from phase 4 on, with no migration; older second-precision
+values still work as versions, and an older image stamping seconds does too. Rolling
 back the application leaves the extra table unused; restoring the complete
 pre-deploy backup also removes sessions created since that backup. Do not replace
 individual financial tables. Keep the backend behind the current HTTPS tailnet.

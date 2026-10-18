@@ -6,7 +6,7 @@ import * as projects from './projects.ts';
 import { createDeviceSession } from './mobile-sessions.ts';
 import { handleMobileRequest } from './mobile-api.ts';
 import { parseProjectForm, parseTaskForm } from './project-schemas.ts';
-import { parseClientForm } from './schemas.ts';
+import { parseClientForm, parseInvoiceForm } from './schemas.ts';
 const NOW = Date.UTC(2026,9,15,3); const TODAY = '2026-10-15';
 let token: string;
 beforeEach(() => {
@@ -29,7 +29,7 @@ test('all reads and session revocations require device authorization, not a web 
     assert.equal((await api(route,'GET',undefined,null)).status,401);
   }
   assert.equal((await api('sessions/1','DELETE',undefined,null)).status,401);
-  assert.equal((await api('invoices','POST',{})).status,405);
+  assert.equal((await api('overview','POST',{})).status,405);
   const response = await handleMobileRequest(new Request('https://example.test/api/v1/clients',{headers:{cookie:'npinv_session=anything'}}),NOW);
   assert.equal(response.status,401);
 });
@@ -162,7 +162,7 @@ test('writes need a write-scope device session; read sessions get 403 and other 
   assert.equal((await api(`tasks/${t}`,'DELETE',undefined,read)).status,403);
   assert.equal((await api('tasks','GET',undefined,read)).status,200);
   assert.equal(taskCount(),1);
-  assert.equal((await api('invoices','POST',{})).status,405);
+  assert.equal((await api('overview','POST',{})).status,405);
   assert.equal((await api('tasks','PUT',{})).status,405);
   assert.equal((await api(`tasks/${t}`,'POST',{})).status,405);
   const login = await api('sessions','POST',{password:process.env.ADMIN_PASSWORD,deviceName:'New phone'},null);
@@ -234,7 +234,7 @@ test('Idempotency-Key replays a create once per session and never stores failure
 test('the write table leaves paths outside it as they were', async () => {
   const p = project(client('Studio'),'Design');
   const t = projects.saveTask(p,null,{title:'Review',dueDate:'',completed:false});
-  for (const path of ['constructor','__proto__','invoices',`clients/${p}`]) assert.equal((await api(path,'POST',{})).status,405,path);
+  for (const path of ['constructor','__proto__','overview',`clients/${p}`]) assert.equal((await api(path,'POST',{})).status,405,path);
   for (const [path,method] of [[`tasks/${t}/extra`,'POST'],[`tasks/${t}/extra`,'GET'],[`tasks/${t}/a/b`,'PATCH']]) assert.equal((await api(path,method,method === 'GET' ? undefined : {})).status,404,`${method} ${path}`);
   assert.equal((await api('tasks/abc','PATCH',{})).status,400);
   assert.equal((await api(`invoices/${p}/print`,'POST')).status,405);
@@ -422,4 +422,137 @@ test('client creates replay once per key', async () => {
   assert.equal(replay.status,201); assert.equal(replay.headers.get('idempotent-replayed'),'true');
   assert.equal(replay.body.data.id,first.body.data.id); assert.equal(clientCount(),1);
   assert.equal((await createClient(clientBody({name:'Other'}))).status,422,'a key reused with another body');
+});
+const draft = () => repo.saveInvoice(null,{clientId:null,projectId:null,billToName:'Synthetic',billToCompany:'',billToAddress:'',issueDate:TODAY,dueDate:'2026-10-31',currency:'USD',taxRateBp:0,discountType:'amount',discountValue:0,downPaymentType:'amount',downPaymentValue:0,notes:'',items:[{description:'Design',qty:1,unitPrice:10000,notes:''}]});
+test('invoice reads carry the version, and a suggested number only for unnumbered drafts', async () => {
+  const id = draft();
+  const read = (await api(`invoices/${id}`)).body.data;
+  assert.equal(read.suggestedNumber,'INV-2026-001'); assert.equal(typeof read.updatedAt,'string');
+  repo.markSent(id,'INV-2026-001');
+  assert.equal((await api(`invoices/${id}`)).body.data.suggestedNumber,null);
+  repo.revertToDraft(id);
+  const reverted = (await api(`invoices/${id}`)).body.data;
+  assert.equal(reverted.status,'draft'); assert.equal(reverted.number,'INV-2026-001'); assert.equal(reverted.suggestedNumber,null);
+});
+test('settings are readable by any session and stay read-only', async () => {
+  const read = createDeviceSession('Old phone', NOW).token;
+  getDb().prepare("UPDATE device_sessions SET scope = 'read' WHERE device_name = 'Old phone'").run();
+  const settings = await api('settings','GET',undefined,read);
+  assert.equal(settings.status,200); assert.deepEqual(settings.body.data,repo.getSettings());
+  assert.equal((await api('settings',undefined,undefined,null)).status,401);
+  assert.equal((await api('settings?x=1')).status,400);
+  assert.equal((await api('settings','PATCH',{})).status,405);
+  assert.equal((await api('settings/1')).status,404);
+});
+
+const line = (overrides: Record<string, string> = {}) => ({description:'Design',qty:'1',unitPrice:'100',notes:'',...overrides});
+const invoiceBody = (overrides: Record<string, unknown> = {}) => ({clientId:'',projectId:'',billToName:'Synthetic',billToCompany:'',billToAddress:'',
+  issueDate:TODAY,dueDate:'2026-10-31',currency:'USD',taxEnabled:false,taxRate:'11',discountEnabled:false,discountType:'percent',discount:'',
+  downPaymentEnabled:false,downPaymentType:'percent',downPayment:'',notes:'',items:[line()],...overrides});
+const createInvoice = (body: unknown, key: string | null = KEY, credential: string | null = token) =>
+  api('invoices','POST',body,credential,key === null ? {} : {'idempotency-key':key});
+const invoiceCount = () => (getDb().prepare('SELECT COUNT(*) AS n FROM invoices').get() as {n:number}).n;
+const versionOf = async (id: number) => (await api(`invoices/${id}`)).body.data.updatedAt as string;
+const GONE_INVOICE = 'Invoice no longer exists.';
+
+test('invoice writes need a write-scope session, and other methods on their paths get 405', async () => {
+  const id = draft(); const updatedAt = await versionOf(id);
+  const routes = [['invoices','POST',invoiceBody()],[`invoices/${id}`,'PATCH',{...invoiceBody(),updatedAt}],[`invoices/${id}`,'DELETE',undefined],
+    [`invoices/${id}/send`,'POST',{number:'INV-1',updatedAt}],[`invoices/${id}/revert`,'POST',undefined],[`invoices/${id}/duplicate`,'POST',undefined]] as const;
+  for (const [path,method,body] of routes) assert.equal((await api(path,method,body,null)).status,401,`${method} ${path}`);
+  const read = createDeviceSession('Old phone', NOW).token;
+  getDb().prepare("UPDATE device_sessions SET scope = 'read' WHERE device_name = 'Old phone'").run();
+  for (const [path,method,body] of routes) assert.equal((await api(path,method,body,read,{'idempotency-key':KEY})).status,403,`${method} ${path}`);
+  assert.equal(invoiceCount(),1); assert.equal((await api(`invoices/${id}`)).body.data.status,'draft');
+  for (const [path,method] of [['invoices','PUT'],[`invoices/${id}`,'POST'],[`invoices/${id}/send`,'PATCH'],[`invoices/${id}/send`,'GET'],[`invoices/${id}/duplicate`,'GET']]) {
+    assert.equal((await api(path,method,method === 'GET' ? undefined : {})).status,405,`${method} ${path}`);
+  }
+});
+test('invoice creates use strict bodies and the shared parser', async () => {
+  const valid = invoiceBody();
+  const noItems: Record<string, unknown> = {...valid}; delete noItems.items;
+  for (const [label,body] of [['unknown key',{...valid,extra:''}],['unknown line key',{...valid,items:[{...line(),id:1}]}],['numeric qty',{...valid,items:[{...line(),qty:1}]}],
+    ['string switch',{...valid,taxEnabled:'true'}],['missing items',noItems]] as const) assert.equal((await createInvoice(body)).status,400,label);
+  assert.equal((await api('invoices?x=1','POST',valid,token,{'idempotency-key':KEY})).status,400,'query string');
+  assert.equal((await createInvoice(valid,null)).status,400,'missing key');
+  for (const values of [invoiceBody({items:[]}),invoiceBody({items:[line(),line({unitPrice:'1.505'})]}),invoiceBody({dueDate:'2026-10-01'})]) {
+    const invalid = await createInvoice(values); const shared = parseInvoiceForm(values);
+    assert.equal(invalid.status,422); assert.ok(!shared.ok); assert.deepEqual(invalid.body.errors,shared.errors);
+  }
+  assert.ok('items.1.unitPrice' in (await createInvoice(invoiceBody({items:[line(),line({unitPrice:'x'})]}))).body.errors);
+  assert.equal(invoiceCount(),0);
+  const created = await createInvoice(valid);
+  assert.equal(created.status,201); assert.equal(created.body.data.total,10000); assert.equal(created.body.data.suggestedNumber,'INV-2026-001');
+  assert.deepEqual((await api(`invoices/${created.body.data.id}`)).body.data,created.body.data);
+});
+test('the invoice body limit fits the largest valid invoice, and other bodies stay at 8 KB', async () => {
+  const largest = invoiceBody({billToName:'€'.repeat(200),billToCompany:'€'.repeat(200),billToAddress:'€'.repeat(500),notes:'€'.repeat(2000),
+    items:Array.from({length:200},()=>line({description:'€'.repeat(300),qty:'999',unitPrice:'1',notes:'€'.repeat(200)}))});
+  assert.ok(JSON.stringify(largest).length > 8192);
+  assert.equal((await createInvoice(largest)).status,201,'the largest valid invoice fits');
+  assert.equal((await createInvoice(invoiceBody({notes:'x'.repeat(600_000)}),'synthetic-key-0000000002')).status,413);
+  const id = draft();
+  assert.equal((await api(`invoices/${id}/send`,'POST',{number:'x'.repeat(9000),updatedAt:''})).status,413);
+  assert.equal((await api('sessions','POST',{password:'x'.repeat(9000),deviceName:'Phone'},null)).status,413);
+});
+test('invoice edits check updatedAt before the fields, then save every line in order', async () => {
+  const id = draft();
+  getDb().prepare("UPDATE invoices SET updated_at = '2026-10-15 04:00:00' WHERE id = ?").run(id);
+  const seen = await versionOf(id);
+  assert.equal((await api(`invoices/${id}`,'PATCH',invoiceBody())).status,400,'updatedAt is required');
+  const stale = await api(`invoices/${id}`,'PATCH',{...invoiceBody({items:[]}),updatedAt:'2026-01-01 00:00:00.000'});
+  assert.equal(stale.status,409); assert.equal(stale.body.message,'This invoice changed elsewhere. Reload to see the latest version.');
+  const items = [line({description:'First'}),line({description:'Second',unitPrice:'50'})];
+  const saved = await api(`invoices/${id}`,'PATCH',{...invoiceBody({items}),updatedAt:seen});
+  assert.equal(saved.status,200); assert.notEqual(saved.body.data.updatedAt,seen);
+  assert.deepEqual(saved.body.data.items.map((item: {description:string}) => item.description),['First','Second']); assert.equal(saved.body.data.total,15000);
+  const missing = await api('invoices/99999','PATCH',{...invoiceBody(),updatedAt:seen});
+  assert.equal(missing.status,404); assert.equal(missing.body.message,GONE_INVOICE);
+});
+test('invoice save conflicts answer 422 on their fields and write nothing', async () => {
+  const owner = client('Owner'); const other = client('Other'); const p = project(owner,'Owned');
+  const conflict = await createInvoice(invoiceBody({clientId:String(other),projectId:String(p)}));
+  assert.equal(conflict.status,422); assert.equal(conflict.body.errors.projectId,'Choose a project belonging to the selected client.');
+  const huge = await createInvoice(invoiceBody({items:[line({qty:'999999',unitPrice:'9999999999999'})]}),'synthetic-key-0000000003');
+  assert.deepEqual(huge.body,{message:'The invoice total is too large to store.'}); assert.equal(huge.status,422);
+  assert.equal(invoiceCount(),0);
+  const id = draft(); repo.markSent(id,'INV-1');
+  assert.deepEqual(repo.recordPayment(id,'USD',{paidOn:TODAY,amount:5000,note:'',writeOff:false}),{ok:true});
+  const paid = await api(`invoices/${id}`,'PATCH',{...invoiceBody({currency:'IDR',items:[line({unitPrice:'1000'})]}),updatedAt:await versionOf(id)});
+  assert.equal(paid.status,422); assert.equal(paid.body.errors.currency,'The currency cannot change once payments are recorded.');
+  assert.equal((await api(`invoices/${id}`)).body.data.currency,'USD');
+});
+test('send, revert and delete follow the shared writers', async () => {
+  const id = draft(); const other = draft();
+  const send = async (invoice: number, number: string, updatedAt?: string) => api(`invoices/${invoice}/send`,'POST',{number,updatedAt:updatedAt ?? await versionOf(invoice)});
+  assert.equal((await send(id,'INV-9','2026-01-01 00:00:00.000')).status,409);
+  const bad = await send(id,'!'); assert.equal(bad.status,422); assert.equal(typeof bad.body.errors.number,'string');
+  const sent = await send(id,'inv-9');
+  assert.equal(sent.status,200); assert.equal(sent.body.data.number,'INV-9'); assert.equal(sent.body.data.status,'sent');
+  assert.deepEqual((await send(id,'INV-10')).body,{message:'Only a draft can be marked sent.'});
+  const used = await send(other,'INV-9'); assert.equal(used.status,422); assert.deepEqual(used.body,{message:'Number INV-9 is already used by another invoice.'});
+  const reverted = await api(`invoices/${id}/revert`,'POST');
+  assert.equal(reverted.status,200); assert.equal(reverted.body.data.status,'draft'); assert.equal(reverted.body.data.number,'INV-9');
+  assert.deepEqual((await api(`invoices/${id}/revert`,'POST')).body,{message:'Only a sent invoice can go back to draft.'});
+  await send(id,'ignored'); repo.recordPayment(id,'USD',{paidOn:TODAY,amount:100,note:'',writeOff:false});
+  const refused = await api(`invoices/${id}/revert`,'POST');
+  assert.equal(refused.status,422); assert.deepEqual(refused.body,{message:'Remove its payments before sending it back to draft.'});
+  assert.equal((await api(`invoices/${id}`)).body.data.number,'INV-9');
+  assert.deepEqual((await api(`invoices/${id}`,'DELETE')).body,{ok:true});
+  assert.equal((await api(`invoices/${id}`)).status,404);
+  for (const [path,method,body,extra] of [['invoices/99999/send','POST',{number:'X',updatedAt:''},{}],['invoices/99999/revert','POST',undefined,{}],
+    ['invoices/99999/duplicate','POST',undefined,{'idempotency-key':KEY}],['invoices/99999','DELETE',undefined,{}]] as const) {
+    const missing = await api(path,method,body,token,extra); assert.equal(missing.status,404,path); assert.equal(missing.body.message,GONE_INVOICE,path);
+  }
+});
+test('duplicate makes one dated, unnumbered copy per key', async () => {
+  const id = draft(); repo.markSent(id,'INV-1'); const second = draft();
+  const duplicate = (source: number, key: string | null = KEY) => api(`invoices/${source}/duplicate`,'POST',undefined,token,key === null ? {} : {'idempotency-key':key},Date.UTC(2026,9,20,3));
+  assert.equal((await duplicate(id,null)).status,400);
+  const copy = await duplicate(id);
+  assert.equal(copy.status,201); assert.equal(copy.body.data.number,null); assert.equal(copy.body.data.status,'draft'); assert.equal(copy.body.data.issueDate,'2026-10-20');
+  const replay = await duplicate(id);
+  assert.equal(replay.status,201); assert.equal(replay.headers.get('idempotent-replayed'),'true'); assert.equal(replay.body.data.id,copy.body.data.id);
+  assert.equal((await duplicate(second)).status,422,'a key is bound to its source invoice');
+  assert.equal(invoiceCount(),3);
 });

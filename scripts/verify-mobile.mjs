@@ -77,12 +77,33 @@ try {
   assert.deepEqual(await refused.json(),{message:'This client has projects. Keep the client to preserve their project history.'});
   assert.equal((await fetch(base+`/api/v1/clients/${newClient.id}`,{method:'DELETE',headers})).status,200);
   assert.equal((await fetch(base+`/api/v1/clients/${newClient.id}`,{headers})).status,404);
+  const appSettings=await fetch(base+'/api/v1/settings',{headers}); assert.equal(appSettings.status,200); assert.equal((await appSettings.json()).data.invoicePrefix,'INV');
+  const invoiceFields={clientId:String(client),projectId:'',billToName:'Smoke invoice',billToCompany:'',billToAddress:'',issueDate:'2026-10-15',dueDate:'2026-10-29',currency:'IDR',
+    taxEnabled:true,taxRate:'11',discountEnabled:false,discountType:'percent',discount:'',downPaymentEnabled:false,downPaymentType:'percent',downPayment:'',notes:'',
+    items:[{description:'Smoke line',qty:'2',unitPrice:'500000',notes:''}]};
+  const keyed=key=>({...writing,'idempotency-key':key});
+  const createInvoice=()=>fetch(base+'/api/v1/invoices',{method:'POST',headers:keyed('synthetic-smoke-key-0003'),body:JSON.stringify(invoiceFields)});
+  const invoiceMade=await createInvoice(); assert.equal(invoiceMade.status,201); const newInvoice=(await invoiceMade.json()).data;
+  assert.equal(newInvoice.total,1110000);
+  const invoiceReplay=await createInvoice(); assert.equal(invoiceReplay.headers.get('idempotent-replayed'),'true'); assert.equal((await invoiceReplay.json()).data.id,newInvoice.id);
+  const editInvoice=updatedAt=>fetch(base+`/api/v1/invoices/${newInvoice.id}`,{method:'PATCH',headers:writing,body:JSON.stringify({...invoiceFields,notes:'Edited',updatedAt})});
+  const invoiceEdited=await editInvoice(newInvoice.updatedAt); assert.equal(invoiceEdited.status,200); const edited=(await invoiceEdited.json()).data;
+  assert.equal((await editInvoice(newInvoice.updatedAt)).status,409);
+  const invoiceAction=(name,init={})=>fetch(base+`/api/v1/invoices/${newInvoice.id}/${name}`,{method:'POST',headers,...init});
+  const sent=await invoiceAction('send',{headers:writing,body:JSON.stringify({number:'SMOKE-1',updatedAt:edited.updatedAt})});
+  assert.equal(sent.status,200); assert.equal((await sent.json()).data.number,'SMOKE-1');
+  assert.equal((await invoiceAction('revert')).status,200);
+  const duplicate=()=>invoiceAction('duplicate',{headers:{...headers,'idempotency-key':'synthetic-smoke-key-0004'}});
+  const copied=await duplicate(); assert.equal(copied.status,201); const copy=(await copied.json()).data;
+  assert.equal((await (await duplicate()).json()).data.id,copy.id);
+  assert.equal((await fetch(base+`/api/v1/invoices/${copy.id}`,{method:'DELETE',headers})).status,200);
+  assert.equal((await fetch(base+`/api/v1/invoices/${copy.id}`,{headers})).status,404);
   const settings=await fetch(base+'/settings',{headers:{cookie:`npinv_session=${createSession()}`}});
   assert.equal(settings.status,200); const html=await settings.text();
   assert.ok(html.includes('Synthetic phone')); assert.ok(html.includes('Mobile devices')); assert.ok(!html.includes(credential.token));
   assert.equal((await fetch(base+`/api/v1/sessions/${credential.id}`,{method:'DELETE',headers})).status,200);
   assert.equal((await fetch(base+'/api/v1/clients',{headers})).status,401);
-  console.log('Mobile HTTP smoke passed: auth, five reads, strict raw queries, balances, project writes (create, replay, edit, conflict, archive, restore, 405), client writes (create, replay, edit, conflict, refused delete, delete), web device list, and revocation.');
+  console.log('Mobile HTTP smoke passed: auth, five reads, strict raw queries, balances, project writes (create, replay, edit, conflict, archive, restore, 405), client writes (create, replay, edit, conflict, refused delete, delete), settings read, invoice writes (create, replay, edit, conflict, send, revert, duplicate, replay, delete), web device list, and revocation.');
 } finally {
   if(server.exitCode===null) server.kill('SIGTERM');
   await stopped;

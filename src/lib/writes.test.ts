@@ -1,10 +1,10 @@
 import { beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { getDb } from './db.ts';
-import { createClient, listClients, NotFoundError, ProjectConflictError } from './repo.ts';
+import { createClient, getInvoice, listClients, markSent, NotFoundError, PaymentConflictError, ProjectConflictError, recordPayment } from './repo.ts';
 import * as projects from './projects.ts';
 import { parseProjectForm } from './project-schemas.ts';
-import { parseClientForm } from './schemas.ts';
+import { parseClientForm, parseInvoiceForm } from './schemas.ts';
 import * as writes from './writes.ts';
 beforeEach(() => getDb().exec('DELETE FROM invoices; DELETE FROM projects; DELETE FROM clients'));
 const client = () => createClient({name:'Synthetic', company:'', address:'', email:'', phone:''});
@@ -55,4 +55,38 @@ test('saveClient creates and updates through the shared writer and stamps the ve
 });
 test('saveClient throws NotFoundError for a missing client', () => {
   assert.throws(() => writes.saveClient(999999, clientValues()), NotFoundError);
+});
+
+const invoiceValues = (overrides: Record<string, unknown> = {}) => ({clientId:'', projectId:'', billToName:'Synthetic', billToCompany:'', billToAddress:'',
+  issueDate:'2026-10-01', dueDate:'2026-10-31', currency:'USD', taxEnabled:false, taxRate:'11', discountEnabled:false, discountType:'percent', discount:'',
+  downPaymentEnabled:false, downPaymentType:'percent', downPayment:'', notes:'', items:[{description:'Design', qty:'1', unitPrice:'100', notes:''}], ...overrides});
+const invoiceCount = () => (getDb().prepare('SELECT COUNT(*) AS n FROM invoices').get() as {n:number}).n;
+
+test('saveInvoice returns the parser errors and writes nothing for an invalid form', () => {
+  const invalid = invoiceValues({items: []});
+  assert.deepEqual(writes.saveInvoice(null, invalid), parseInvoiceForm(invalid));
+  assert.equal(invoiceCount(), 0);
+});
+test('saveInvoice creates and updates through the shared writer', () => {
+  const created = writes.saveInvoice(null, invoiceValues());
+  assert.ok(created.ok);
+  assert.equal(getInvoice(created.id)?.total, 10000);
+  assert.deepEqual(writes.saveInvoice(created.id, invoiceValues({items:[{description:'Design', qty:'1', unitPrice:'200', notes:''}]})), {ok:true, id:created.id});
+  assert.equal(getInvoice(created.id)?.total, 20000);
+});
+test('saveInvoice keeps the payment guards', () => {
+  const created = writes.saveInvoice(null, invoiceValues());
+  assert.ok(created.ok);
+  assert.deepEqual(markSent(created.id, 'INV-1'), {ok:true});
+  assert.deepEqual(recordPayment(created.id, 'USD', {paidOn:'2026-10-02', amount:5000, note:'', writeOff:false}), {ok:true});
+  assert.throws(() => writes.saveInvoice(created.id, invoiceValues({currency:'IDR'})), (error: unknown) => error instanceof PaymentConflictError && error.field === 'currency');
+});
+test('markSent parses the number, then reports the writer refusals', () => {
+  const first = writes.saveInvoice(null, invoiceValues()); const second = writes.saveInvoice(null, invoiceValues());
+  assert.ok(first.ok && second.ok);
+  const bad = writes.markSent(first.id, 'bad number!');
+  assert.ok(!bad.ok && 'errors' in bad && typeof bad.errors.number === 'string');
+  assert.deepEqual(writes.markSent(first.id, 'inv-1'), {ok:true});
+  assert.equal(getInvoice(first.id)?.number, 'INV-1');
+  assert.deepEqual(writes.markSent(second.id, 'INV-1'), {ok:false, error:'Number INV-1 is already used by another invoice.'});
 });

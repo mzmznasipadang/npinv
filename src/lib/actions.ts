@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import type { Currency } from "./money";
 import * as repo from "./repo";
 import { today } from "./rules";
-import { parseInvoiceForm, parseInvoiceNumber, parsePaymentForm, parseSettingsForm } from "./schemas";
+import { parsePaymentForm, parseSettingsForm } from "./schemas";
 import type { ClientFormValues, FormState, InvoiceFormValues, PaymentFormValues, SettingsFormValues } from "./schemas";
 
 import { requireSession } from "./session";
@@ -70,11 +70,9 @@ export async function deleteClientAction(id: number): Promise<FormState> {
 export async function saveInvoiceAction(id: number | null, values: InvoiceFormValues): Promise<FormState> {
   await requireSession();
   if (id !== null && !isId(id)) return { message: GONE };
-  const parsed = parseInvoiceForm(values);
-  if (!parsed.ok) return { errors: parsed.errors };
-  let savedId: number;
+  let result: ReturnType<typeof writes.saveInvoice>;
   try {
-    savedId = repo.saveInvoice(id, parsed.data);
+    result = writes.saveInvoice(id, values);
   } catch (error) {
     if (error instanceof RangeError) return { message: "The invoice total is too large to store." };
     if (error instanceof repo.NotFoundError) return { message: GONE };
@@ -82,18 +80,17 @@ export async function saveInvoiceAction(id: number | null, values: InvoiceFormVa
     if (error instanceof repo.PaymentConflictError) return { errors: { [error.field]: error.message } };
     throw error;
   }
+  if (!result.ok) return { errors: result.errors };
   refresh();
-  if (id === null) redirect(`/invoices/${savedId}`);
+  if (id === null) redirect(`/invoices/${result.id}`);
   return { ok: true };
 }
 
 export async function markSentAction(id: number, number: string): Promise<FormState> {
   await requireSession();
   if (!isId(id)) return { message: GONE };
-  const parsed = parseInvoiceNumber(number);
-  if (!parsed.ok) return { errors: parsed.errors };
-  const result = repo.markSent(id, parsed.data);
-  if (!result.ok) return { message: result.error };
+  const result = writes.markSent(id, number);
+  if (!result.ok) return "errors" in result ? { errors: result.errors } : { message: result.error };
   refresh();
   return { ok: true };
 }
